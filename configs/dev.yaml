@@ -1,0 +1,7 @@
+app:
+  name: arch-fastapi
+  env: dev
+  host: 0.0.0.0
+  port: 8000
+  debug: true
+  log_level: DEBUG
