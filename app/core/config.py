@@ -10,7 +10,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-_ENV_CHOICES = {"dev", "test", "prod"}
+_ENV_CHOICES = ("dev", "test", "prod")
+_DEFAULT_ENV = "dev"
 
 
 class AppSettings(BaseModel):
@@ -41,10 +42,10 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        env = os.getenv("APP_ENV", "dev")
+        env = os.getenv("APP_ENV", _DEFAULT_ENV)
         if env not in _ENV_CHOICES:
             raise ValueError(
-                f"APP_ENV 非法: {env!r}，允许 {sorted(_ENV_CHOICES)}"
+                f"APP_ENV 非法: {env!r}，允许 {list(_ENV_CHOICES)}"
             )
         yaml_path = Path(__file__).resolve().parents[2] / "configs" / f"{env}.yaml"
         if not yaml_path.exists():

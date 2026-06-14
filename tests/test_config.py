@@ -1,4 +1,6 @@
-from app.core.config import AppSettings
+import pytest
+
+from app.core.config import AppSettings, Settings, get_settings
 
 
 def test_app_settings_defaults():
@@ -9,11 +11,6 @@ def test_app_settings_defaults():
     assert s.port == 8000
     assert s.debug is False
     assert s.log_level == "INFO"
-
-
-import pytest
-
-from app.core.config import Settings, get_settings
 
 
 def test_settings_loads_dev_yaml_by_default(monkeypatch):
