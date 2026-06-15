@@ -17,7 +17,7 @@ def load_config() -> Settings:
     - 打印生效配置，便于启动期排查（当前 app 段无敏感字段，可直接打印）。
     """
     settings = get_settings()
-    setup_logging(level=settings.app.log_level)
+    setup_logging(settings.logging)
     # 把 uvicorn 日志接入 loguru，应用日志与访问/错误日志格式统一
     intercept_uvicorn_logs(level=settings.app.log_level)
     app_cfg = settings.app

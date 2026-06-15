@@ -6,3 +6,14 @@ app:
   port: 8000
   debug: false  # 测试环境关闭调试
   log_level: INFO
+
+logging:
+  level: INFO
+  serialize: false   # test 关 JSON：可读文本便于 CI 排查
+  dir: logs
+  rotation: "00:00"   # 按天轮转：每天 0 点分割，文件名带日期便于归档
+  retention: 30 days
+  compression: zip
+  diagnose: false
+  backtrace: true
+  enqueue: true

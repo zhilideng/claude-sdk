@@ -13,3 +13,14 @@ app:
   limit_concurrency: 2000  # 最大并发连接，背压保护
   timeout_keep_alive: 10  # keep-alive 秒数
   access_log: true  # 保留访问日志（接 loguru）；若有外层网关记 access log 可设 false
+
+logging:
+  level: WARNING
+  serialize: true   # prod 开 JSON：结构化输出供 ELK/Loki 聚合
+  dir: logs
+  rotation: "00:00"   # 按天轮转：每天 0 点分割，文件名带日期便于归档
+  retention: 30 days
+  compression: zip
+  diagnose: false   # prod 关：防异常栈泄露敏感变量
+  backtrace: true
+  enqueue: true

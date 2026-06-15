@@ -1,14 +1,22 @@
 """结构化日志（基于 loguru）。
 
 提供全局 logger、setup_logging 与 intercept_uvicorn_logs：
-- setup_logging：按配置级别输出到 stdout，生产关闭 diagnose 防敏感信息泄露；
-- intercept_uvicorn_logs：把 uvicorn 的标准库 logging 接入 loguru，
-  使应用日志与 uvicorn 访问 / 错误日志格式统一，便于生产排查。
+- setup_logging：配 3 个 sink（stdout 全量 / app.log 全量 / error.log ERROR 分流）。
+  按环境双模式：``serialize=False``（dev/test）输出人类可读单行（stdout 彩色、
+  文件纯文本，颜色标签自动剥离）；``serialize=True``（prod）输出 JSON 供
+  ELK/Loki 聚合。生产 diagnose=False 防异常栈泄露敏感变量。
+- intercept_uvicorn_logs：把 uvicorn 标准库 logging 接入 loguru，使应用日志与
+  uvicorn 访问/错误日志格式统一，便于生产排查。
 """
+import json
 import logging
 import sys
+import traceback
+from pathlib import Path
 
 from loguru import logger
+
+from app.core.settings import LoggingSettings
 
 # 默认日志格式：时间 | 级别 | 模块:函数:行号 - 消息
 _DEFAULT_FORMAT = (
@@ -17,6 +25,8 @@ _DEFAULT_FORMAT = (
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
     "<level>{message}</level>"
 )
+# prod 精简 JSON：每行 = patcher 预生成的 {extra[__json__]}（serialize=False，弃用 loguru 全字段序列化）
+_JSON_LINE_FORMAT = "{extra[__json__]}"
 
 
 class InterceptHandler(logging.Handler):
@@ -56,21 +66,83 @@ def intercept_uvicorn_logs(level: str = "INFO") -> None:
         target.propagate = False
 
 
-def setup_logging(level: str = "INFO") -> None:
-    """初始化全局日志配置。
+def _build_patcher(app_cfg):
+    """构造 patcher：注入 env/service，并预生成精简 JSON 供 prod format 使用。
 
-    - 移除 loguru 默认 handler，避免重复输出；
-    - 输出到 stdout，按 level 过滤；
-    - diagnose=False：生产环境异常栈不展开局部变量值，避免敏感信息泄露。
+    dev/test 的可读 format 不引用 ``__json__``，多塞一个 extra 无害；prod 的
+    format = ``{extra[__json__]}``，直接输出预生成的精简 JSON 行（仅
+    time/level/logger/func/line/message/env/service + 异常时的 exception），
+    杜绝 loguru serialize 全字段噪音（process/thread/elapsed/file 等）。
     """
+
+    def _patcher(record):
+        record["extra"].setdefault("env", app_cfg.env)
+        record["extra"].setdefault("service", app_cfg.name)
+        payload = {
+            "time": record["time"].isoformat(),
+            "level": record["level"].name,
+            "logger": record["name"],
+            "func": record["function"],
+            "line": record["line"],
+            "message": record["message"],
+            "env": record["extra"]["env"],
+            "service": record["extra"]["service"],
+        }
+        # prod format 不含 {message}，loguru 不会自动渲染异常栈，这里手动塞
+        if record["exception"] is not None:
+            exc = record["exception"]
+            payload["exception"] = "".join(
+                traceback.format_exception(exc.type, exc.value, exc.traceback)
+            )
+        record["extra"]["__json__"] = json.dumps(payload, ensure_ascii=False)
+
+    return _patcher
+
+
+def setup_logging(log_settings: LoggingSettings) -> list[int]:
+    """按 LoggingSettings 配置生产级多 sink 日志。
+
+    3 个 sink（均 serialize=JSON、enqueue=True）：
+    - stdout：全量（容器/k8s 采集入口）；
+    - {dir}/app.log：全量，按 rotation/retention/compression 轮转；
+    - {dir}/error.log：level≥ERROR 分流（告警/独立监控）。
+
+    经 patcher 注入 env/service 到每条日志 record.extra（JSON 序列化后落入 extra 字段）；
+    diagnose/backtrace 按配置，生产 diagnose=False 防敏感信息泄露。返回各 sink 的
+    handler id 列表，便于测试与运行期管理。
+    """
+    from app.core.config import get_settings
+
+    app_cfg = get_settings().app
+    level = log_settings.level.upper()
+
     logger.remove()
-    logger.add(
-        sys.stdout,
-        level=level.upper(),
-        format=_DEFAULT_FORMAT,
-        backtrace=True,
-        diagnose=False,
+    logger.configure(patcher=_build_patcher(app_cfg))
+
+    log_dir = Path(log_settings.dir)
+    log_dir.mkdir(parents=True, exist_ok=True)  # 确保日志目录存在
+
+    file_kw = dict(  # 文件 sink 共享的轮转/保留/压缩
+        rotation=log_settings.rotation,
+        retention=log_settings.retention,
+        compression=log_settings.compression,
     )
+    # serialize=True(prod)→精简 JSON 行；False(dev/test)→人类可读单行
+    line_format = _JSON_LINE_FORMAT if log_settings.serialize else _DEFAULT_FORMAT
+    common_kw = dict(  # 所有 sink 共享
+        level=level,
+        format=line_format,
+        serialize=False,  # 不用 loguru 内置全字段序列化，改由 format+patcher 自管
+        backtrace=log_settings.backtrace,
+        diagnose=log_settings.diagnose,
+        enqueue=log_settings.enqueue,
+    )
+    return [
+        logger.add(sys.stdout, **common_kw),
+        logger.add(log_dir / "app.log", **file_kw, **common_kw),
+        # error sink 覆盖 level 为 ERROR，其余沿用 common_kw
+        logger.add(log_dir / "error.log", **file_kw, **{**common_kw, "level": "ERROR"}),
+    ]
 
 
-__all__ = ["logger", "setup_logging", "intercept_uvicorn_logs", "InterceptHandler"]
+

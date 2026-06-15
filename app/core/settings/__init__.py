@@ -14,6 +14,6 @@
 当前已导出：
 - ``AppSettings`` —— 应用通用配置（名称、环境、host/port、debug、log_level）。
 """
-from app.core.settings.settings import AppSettings
+from app.core.settings.settings import AppSettings, LoggingSettings
 
-__all__ = ["AppSettings"]
+__all__ = ["AppSettings", "LoggingSettings"]

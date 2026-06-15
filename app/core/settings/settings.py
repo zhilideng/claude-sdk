@@ -36,3 +36,22 @@ class AppSettings(BaseModel):
     limit_concurrency: int | None = None  # 最大并发连接数（背压保护）；None=不限
     timeout_keep_alive: int = 5  # keep-alive 超时秒数
     access_log: bool = True  # 是否记录 uvicorn 访问日志（接 loguru，生产排查/审计用）
+
+
+class LoggingSettings(BaseModel):
+    """日志配置段（对应 yaml 的 logging 段）。
+
+    驱动 ``app/core/logger.py`` 的 sink/格式/轮转行为。``level`` 与
+    ``AppSettings.log_level`` 分离：本字段管 logger，``AppSettings.log_level``
+    管 uvicorn（server.py），两者在各 yaml 里分别配置但取值保持一致。
+    """
+
+    level: str = "INFO"  # logger 级别
+    serialize: bool = True  # 统一 JSON 输出（全环境，便于聚合系统解析）
+    dir: str = "logs"  # 日志目录（相对项目根）
+    rotation: str = "00:00"  # 按天轮转（每天 00:00 触发；如需可改大小如 "20 MB"）
+    retention: str = "30 days"  # 保留时长
+    compression: str = "zip"  # 归档压缩
+    diagnose: bool = False  # 异常栈展开变量（dev 开 / prod 关，防敏感信息泄露）
+    backtrace: bool = True  # 异常完整回溯
+    enqueue: bool = True  # 多进程安全队列（prod multi-worker 必须）

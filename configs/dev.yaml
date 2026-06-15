@@ -7,3 +7,14 @@ app:
   port: 8003  # 监听端口
   debug: true  # 开发环境开启调试
   log_level: DEBUG  # 开发环境用 DEBUG 级别日志，便于排查
+
+logging:
+  level: DEBUG
+  serialize: false   # dev 关 JSON：stdout 彩色 + 文件纯文本，人类可读便于排查
+  dir: logs
+  rotation: "00:00"   # 按天轮转：每天 0 点分割，文件名带日期便于归档
+  retention: 30 days
+  compression: zip
+  diagnose: true   # dev 开：异常栈展开变量，便于排查
+  backtrace: true
+  enqueue: true
