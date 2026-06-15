@@ -12,7 +12,11 @@
   对应字段。
 
 当前已定义：
-- ``AppSettings`` —— 应用通用配置（名称、环境、host/port、debug、log_level）。
+- ``AppSettings`` —— 应用通用配置（名称、环境、host/port、debug、log_level）；
+- ``LoggingSettings`` —— 日志配置（级别/序列化/目录/轮转/保留/压缩/diagnose/enqueue）。
+
+注：HTTP 客户端参数与 CORS 跨域策略当前均写死（分别见 ``app/utils/http_client.py``
+与 ``app/middleware/cors.py``），不进配置；将来需按环境调优时再改配置驱动。
 """
 from pydantic import BaseModel
 

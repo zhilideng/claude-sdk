@@ -7,6 +7,7 @@ from app.api.health import router as health_router
 from app.core.config import Settings, get_settings
 from app.core.logger import intercept_uvicorn_logs, logger, setup_logging
 from app.exceptions import register_exception_handlers as register_exception
+from app.middleware.cors import setup_cors
 
 def load_config() -> Settings:
     """启动时加载配置（fail-fast）。
@@ -44,7 +45,13 @@ def register_exception_handlers(app: FastAPI) -> None:
 
 
 def register_middlewares(app: FastAPI) -> None:
-    """注册中间件（JWT / TraceId / 限流等待后续实现）。"""
-    # TODO: 接入 middleware/ 下的各中间件
-    return None
+    """注册中间件（作为「路由→异常→中间件」注册链的最后阶段）。
+
+    已接入：
+    - CORS 跨域中间件（配置驱动，见 ``app/middleware/cors.py``）；
+
+    待加：
+    - JWT 认证 / TraceId / 限流等中间件。
+    """
+    setup_cors(app)
 
