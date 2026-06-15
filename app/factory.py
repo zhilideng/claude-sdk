@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     startup.register_routers(app)
+    startup.register_exception_handlers(app)
     startup.register_middlewares(app)
     return app
 

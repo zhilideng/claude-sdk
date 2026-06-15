@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目当前状态（务必先读）
 
-**配置中心 + 启动链已实现**：
+**配置中心 + 启动链 + 全局异常捕获/统一响应规范已实现**：
 
 - **配置中心**：`app/core/config.py`（pydantic-settings + yaml + .env + 环境变量多源，仅承载 `Settings` 根配置 + 多源加载 + `get_settings`，带 yaml 缺失 fail-fast；configs 目录经 `_resolve_configs_dir()` 解析——可被环境变量 `APP_CONFIG_DIR` 覆盖（容器/生产挂载入口），项目根用 `.git`/`requirements.txt` 标记向上查找抗文件移位；对外仍 re-export `AppSettings`，引用路径不变）；**配置段模型** `app/core/settings/`（schema 层，所有 `XxxSettings` 集中在 `settings.py` 单文件定义，避免 config.py 臃肿；新增 DB/JWT/LLM 等段时在 `settings.py` 加 class + `__init__` 导出 + `Settings` 根聚合字段）；`configs/{dev,test,prod}.yaml`、`.env.example`（含 `APP_CONFIG_DIR` 说明）、`.gitignore` 就位。
-- **启动链已打通**：`main.py`（纯入口，仅暴露模块级 `app` 与触发 `server.run()`）→ `app/core/server.py`（uvicorn 进程级启动：workers/loop/concurrency/keepalive/access_log 全配置驱动，reload 仅 dev 开）→ `app/factory.py`（`create_app` + lifespan 启动加载配置挂 `app.state.settings`）→ `app/startup.py`（`load_config` fail-fast + 脱敏打印、`register_routers`/`register_middlewares`）→ `app/core/logger.py`（loguru，`diagnose=False` 防生产泄露）→ `app/api/health.py`（`/health` 存活探针）。
-- **依赖**：`requirements.txt` 已含 `fastapi` / `uvicorn[standard]` / `loguru`。
-- **测试**：`tests/` 共 **10 个测试全绿**（`test_config.py` 7 + `test_app.py` 3，覆盖多源加载、ENV 覆盖、应用工厂、`/health`、非法 env fail-fast）；真机已验证 `GET /health` 返回 `{"status":"ok","env":...}`。
+- **启动链已打通**：`main.py`（纯入口，仅暴露模块级 `app` 与触发 `server.run()`）→ `app/core/server.py`（uvicorn 进程级启动：workers/loop/concurrency/keepalive/access_log 全配置驱动，reload 仅 dev 开）→ `app/factory.py`（`create_app` + lifespan 启动加载配置挂 `app.state.settings`）→ `app/startup.py`（`load_config` fail-fast + 脱敏打印、`register_routers`/`register_middlewares`）→ `app/core/logger.py`（loguru，`diagnose=False` 防生产泄露）→ `app/api/health.py`（`/health` 存活探针，已返回统一 `ApiResponse` 格式）。
+- **全局异常捕获 + 统一响应规范已实现**：`app/schemas/common.py`（`ApiResponse{code,message,data,errno?}`，`ok()`/`fail()` + `to_payload()`——data 始终输出、errno 仅业务异常输出，故不能用 `exclude_none`）；`app/exceptions/base.py`（`BizException` 基类 + `BizNotFoundError`/`BizAuthError`/`BizForbiddenError`/`BizValidationError` 四子类，`status_code`/`errno`/`message` 为类属性，构造可覆盖）；`app/exceptions/handlers.py`（四 handler：`BizException`→INFO、`StarletteHTTPException`+`FastAPIHTTPException` **双注册**覆盖默认（含路由 404，易错点）→WARNING、`RequestValidationError`→INFO（字段级错误入 data）、`Exception` 兜底→ERROR+堆栈按 `app.debug` 脱敏）；`startup.py` 加 `register_exception_handlers` 薄封装，`factory.create_app` 按「路由→异常→中间件」顺序注册。**code 复用 HTTP 状态码，业务细码走 `errno`**。注意：测 500 兜底 handler 时 `TestClient` 须 `raise_server_exceptions=False`（ServerErrorMiddleware 调 handler 后仍 re-raise）。
+- **依赖**：`requirements.txt` 已含 `fastapi` / `uvicorn[standard]` / `loguru` / `httpx`（TestClient 端到端测试）。
+- **测试**：`tests/` 共 **27 个测试，25 passed / 2 failed**——`test_config.py`(7)、`test_app.py`(3)、`test_api_response.py`(5，ApiResponse 序列化)、`test_exceptions.py`(12，BizException 单元 + 四 handler 端到端含脱敏双场景)。注意：`test_config.py` 的 `test_app_settings_defaults` / `test_settings_loads_dev_yaml_by_default` 为 **pre-existing 失败**（`dev.yaml` port 由 8002 改 8003 漏同步测试；`settings.py` 的 `name` 默认值残留 `arch-fastapi111`），与全局异常捕获无关，经决策暂不修复。真机已验证 `GET /health` 返回统一格式 `{"code":200,"message":"ok","data":{"env":...}}`。
 - **文档约定**：代码注释一律中文（命名仍英文，见「关键实现约定」）。
 - **Hook**：`.claude/` 下 Stop hook——`app/` / `main.py` / `tests/*.py` 有改动但 `CLAUDE.md` 未同步时，强制阻止回合结束（详见 `.claude/hooks/sync_claude_md.sh`）。
 
@@ -44,7 +45,8 @@ api/        Controller 层：FastAPI 路由、参数校验、结果返回
 
 ## 关键实现约定
 
-- **启动链顺序**：`main.py`（`uvicorn main:app`）→ `app/factory.py`（应用工厂，创建 FastAPI 实例）→ `app/startup.py`（集中注册路由、中间件、数据库连接等）。新增模块的注册点统一放 `startup.py`。
+- **启动链顺序**：`main.py`（`uvicorn main:app`）→ `app/factory.py`（应用工厂，创建 FastAPI 实例）→ `app/startup.py`（集中注册路由、异常处理器、中间件等）。新增模块的注册点统一放 `startup.py`。
+- **统一响应 + 全局异常捕获**：所有 API 出口（路由与异常 handler）统一走 `app/schemas/common.py` 的 `ApiResponse{code,message,data,errno?}`（`code` 复用 HTTP 状态码；`errno` 仅业务异常输出）；业务异常 `raise app.exceptions.BizXxxError`（禁止裸 `raise Exception`），由 `app/exceptions/handlers.py` 四个 handler 统一转响应；500 兜底按 `app.debug` 脱敏（生产固定「服务内部错误」，堆栈只进日志）。新增业务异常子类在 `app/exceptions/base.py` 加 class（覆盖 status_code/errno/message）。
 - **配置驱动**：按环境区分，配置文件放 `configs/`，由 `core/config.py` 统一加载。
 - **分层依赖单向**：`api → services → {agents/rag/skills/workflows/memory/mcp} → repositories`，跨层调用禁止逆向。
 - **LLM 访问收敛**：所有模型调用经 `core/llm/`，便于切换厂商与统一计费/限流。

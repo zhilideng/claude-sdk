@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from app.api.health import router as health_router
 from app.core.config import Settings, get_settings
 from app.core.logger import intercept_uvicorn_logs, logger, setup_logging
-
+from app.exceptions import register_exception_handlers as register_exception
 
 def load_config() -> Settings:
     """启动时加载配置（fail-fast）。
@@ -32,6 +32,15 @@ def load_config() -> Settings:
 def register_routers(app: FastAPI) -> None:
     """注册 API 路由。"""
     app.include_router(health_router)
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    """注册全局异常处理器（统一响应格式 + 500 兜底脱敏）。
+
+    薄封装：内部转调 app.exceptions 的实现，保持本文件作为「所有注册点单一清单」
+    的风格，与 register_routers / register_middlewares 同形。
+    """
+    register_exception(app)
 
 
 def register_middlewares(app: FastAPI) -> None:

@@ -5,11 +5,12 @@
 from fastapi import APIRouter
 
 from app.core.config import get_settings
+from app.schemas.common import ApiResponse
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
 async def health() -> dict:
-    """存活探针：返回服务状态与当前环境。"""
-    return {"status": "ok", "env": get_settings().app.env}
+    """存活探针：返回统一响应格式的服务状态与当前环境。"""
+    return ApiResponse.ok({"env": get_settings().app.env}).to_payload()

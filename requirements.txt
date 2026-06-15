@@ -3,6 +3,9 @@ pydantic-settings>=2.0
 pyyaml>=6.0
 pytest>=8.0
 
+# 测试依赖
+httpx>=0.27  # FastAPI TestClient 端到端测试所需
+
 # 启动链依赖
 fastapi>=0.110
 uvicorn[standard]>=0.27
