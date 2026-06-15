@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **配置中心 + 启动链已实现**：
 
 - **配置中心**：`app/core/config.py`（pydantic-settings + yaml + .env + 环境变量多源，仅承载 `Settings` 根配置 + 多源加载 + `get_settings`，带 yaml 缺失 fail-fast；configs 目录经 `_resolve_configs_dir()` 解析——可被环境变量 `APP_CONFIG_DIR` 覆盖（容器/生产挂载入口），项目根用 `.git`/`requirements.txt` 标记向上查找抗文件移位；对外仍 re-export `AppSettings`，引用路径不变）；**配置段模型** `app/core/settings/`（schema 层，所有 `XxxSettings` 集中在 `settings.py` 单文件定义，避免 config.py 臃肿；新增 DB/JWT/LLM 等段时在 `settings.py` 加 class + `__init__` 导出 + `Settings` 根聚合字段）；`configs/{dev,test,prod}.yaml`、`.env.example`（含 `APP_CONFIG_DIR` 说明）、`.gitignore` 就位。
-- **启动链已打通**：`main.py`（uvicorn 入口，host/port/debug/log_level 全配置驱动，reload 仅 debug 开）→ `app/factory.py`（`create_app` + lifespan 启动加载配置挂 `app.state.settings`）→ `app/startup.py`（`load_config` fail-fast + 脱敏打印、`register_routers`/`register_middlewares`）→ `app/core/logger.py`（loguru，`diagnose=False` 防生产泄露）→ `app/api/health.py`（`/health` 存活探针）。
+- **启动链已打通**：`main.py`（纯入口，仅暴露模块级 `app` 与触发 `server.run()`）→ `app/core/server.py`（uvicorn 进程级启动：workers/loop/concurrency/keepalive/access_log 全配置驱动，reload 仅 dev 开）→ `app/factory.py`（`create_app` + lifespan 启动加载配置挂 `app.state.settings`）→ `app/startup.py`（`load_config` fail-fast + 脱敏打印、`register_routers`/`register_middlewares`）→ `app/core/logger.py`（loguru，`diagnose=False` 防生产泄露）→ `app/api/health.py`（`/health` 存活探针）。
 - **依赖**：`requirements.txt` 已含 `fastapi` / `uvicorn[standard]` / `loguru`。
 - **测试**：`tests/` 共 **10 个测试全绿**（`test_config.py` 7 + `test_app.py` 3，覆盖多源加载、ENV 覆盖、应用工厂、`/health`、非法 env fail-fast）；真机已验证 `GET /health` 返回 `{"status":"ok","env":...}`。
 - **文档约定**：代码注释一律中文（命名仍英文，见「关键实现约定」）。

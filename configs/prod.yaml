@@ -2,9 +2,9 @@
 # 注意：DB / JWT / LLM 等敏感密钥务必只经环境变量或 K8s Secret 注入，绝不写入此文件
 app:
   name: arch-fastapi
-  env: dev
+  env: prod
   host: 0.0.0.0
-  port: 8003
+  port: 8005
   debug: false  # 生产环境必须关闭调试
   log_level: WARNING  # 生产用 WARNING，减少日志量
   # uvicorn 运行期调优（生产）
