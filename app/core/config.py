@@ -78,6 +78,7 @@ class Settings(BaseSettings):
 
     app: AppSettings = AppSettings()  # 应用通用配置段
     logging: LoggingSettings = LoggingSettings()  # 日志配置段（驱动 logger.py）
+    db: DBSettings = DBSettings()  # 数据库配置段（驱动 database.py）
     redis: RedisSettings = RedisSettings()  # Redis 缓存配置段（驱动 redis.py）
 
     @classmethod
