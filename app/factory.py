@@ -17,8 +17,19 @@ async def lifespan(app: FastAPI):
     # 启动：加载配置（失败则进程随启动失败而退出）
     settings = startup.load_config()
     app.state.settings = settings
+    # 初始化数据库连接池
+    from app.core.database import init_db
+    init_db(settings.db)
+    # 初始化 Redis 连接池
+    from app.core.redis import init_redis
+    await init_redis(settings.redis)
     yield
-    # 关闭：待加 DB / Redis 连接清理
+    # 关闭：释放 Redis 连接池
+    from app.core.redis import close_redis
+    await close_redis()
+    # 关闭：释放数据库连接池
+    from app.core.database import dispose_db
+    await dispose_db()
 
 
 def create_app() -> FastAPI:
