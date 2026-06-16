@@ -8,6 +8,7 @@ from app.core.config import Settings, get_settings
 from app.core.logger import intercept_uvicorn_logs, logger, setup_logging
 from app.exceptions import register_exception_handlers as register_exception
 from app.middleware.cors import setup_cors
+from app.middleware.request_id import setup_request_id
 
 def load_config() -> Settings:
     """启动时加载配置（fail-fast）。
@@ -52,10 +53,19 @@ def register_exception_handlers(app: FastAPI) -> None:
 def register_middlewares(app: FastAPI) -> None:
     """注册中间件（作为「路由→异常→中间件」注册链的最后阶段）。
 
+    注册顺序（按 add_middleware 调用顺序，先注册的外层）：
+    1. CORS —— 预检请求最先处理（OPTIONS 直接返回）。
+    2. RequestID —— 在 CORS 之后、业务中间件之前注册，确保：
+       - 日志尽早带上 request_id（便于全链路追踪）；
+       - 响应头回写 X-Request-Id（透传给下游）。
+    3. （待加）JWT 认证 / 限流等业务中间件。
+
     已接入：
-    - CORS 跨域中间件（配置驱动，见 ``app/middleware/cors.py``）；
+    - CORS 跨域中间件（全放行策略，见 ``app/middleware/cors.py``）；
+    - RequestID 中间件（追踪请求 id，见 ``app/middleware/request_id.py``）。
 
     待加：
-    - JWT 认证 / TraceId / 限流等中间件。
+    - JWT 认证 / 限流等业务中间件。
     """
     setup_cors(app)
+    setup_request_id(app)

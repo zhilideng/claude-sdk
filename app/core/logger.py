@@ -18,11 +18,13 @@ from loguru import logger
 
 from app.core.settings import LoggingSettings
 
-# 默认日志格式：时间 | 级别 | 模块:函数:行号 - 消息
+# 默认日志格式：时间 | 级别 | 模块:函数:行号 [req_id=xxx] - 消息
+# req_id 从 ContextVar 读取，若请求上下文外则为空（由 get_request_id 处理）
 _DEFAULT_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
-    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+    "<level>[req_id={extra[request_id]}]</level> | "
     "<level>{message}</level>"
 )
 # prod 精简 JSON：每行 = patcher 预生成的 {extra[__json__]}（serialize=False，弃用 loguru 全字段序列化）
@@ -67,17 +69,22 @@ def intercept_uvicorn_logs(level: str = "INFO") -> None:
 
 
 def _build_patcher(app_cfg):
-    """构造 patcher：注入 env/service，并预生成精简 JSON 供 prod format 使用。
+    """构造 patcher：注入 env/service/request_id，并预生成精简 JSON 供 prod format 使用。
 
     dev/test 的可读 format 不引用 ``__json__``，多塞一个 extra 无害；prod 的
     format = ``{extra[__json__]}``，直接输出预生成的精简 JSON 行（仅
-    time/level/logger/func/line/message/env/service + 异常时的 exception），
+    time/level/logger/func/line/message/env/service/request_id + 异常时的 exception），
     杜绝 loguru serialize 全字段噪音（process/thread/elapsed/file 等）。
     """
+    # 延迟导入避免循环依赖（middleware/request_id 导 logger，logger 反向导 get_request_id）
+    from app.middleware.request_id import get_request_id
 
     def _patcher(record):
         record["extra"].setdefault("env", app_cfg.env)
         record["extra"].setdefault("service", app_cfg.name)
+        # 尝试获取当前请求的 request_id（请求上下文外返回 None）
+        request_id = get_request_id()
+        record["extra"]["request_id"] = request_id if request_id else "-"
         payload = {
             "time": record["time"].isoformat(),
             "level": record["level"].name,
@@ -87,6 +94,7 @@ def _build_patcher(app_cfg):
             "message": record["message"],
             "env": record["extra"]["env"],
             "service": record["extra"]["service"],
+            "request_id": record["extra"]["request_id"],
         }
         # prod format 不含 {message}，loguru 不会自动渲染异常栈，这里手动塞
         if record["exception"] is not None:

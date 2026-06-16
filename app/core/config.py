@@ -21,7 +21,7 @@ from pydantic_settings import (
 
 # 各配置段模型统一收纳于 settings/ 包，按文件拆分避免本文件臃肿；
 # 此处 re-export 以保持 ``from app.core.config import AppSettings`` 的对外兼容。
-from app.core.settings import AppSettings, LoggingSettings
+from app.core.settings import AppSettings, DBSettings, LoggingSettings, RedisSettings
 
 # 允许的环境标识，与 configs/ 下的 yaml 文件名一一对应
 _ENV_CHOICES = ("dev", "test", "prod")
@@ -78,6 +78,7 @@ class Settings(BaseSettings):
 
     app: AppSettings = AppSettings()  # 应用通用配置段
     logging: LoggingSettings = LoggingSettings()  # 日志配置段（驱动 logger.py）
+    redis: RedisSettings = RedisSettings()  # Redis 缓存配置段（驱动 redis.py）
 
     @classmethod
     def settings_customise_sources(
