@@ -1,4 +1,7 @@
-"""Redis 缓存访问封装（cache-aside 模式）。
+"""Redis 缓存访问封装（cache-aside 模式）——基础设施工具。
+
+归 ``app/utils/`` 层：与 ``http_client.py`` 同性质，均为「对外部资源操作的泛型工具」
+（本模块操作 Redis 缓存，不绑定任何业务实体），供 services / repositories 各层按需调用。
 
 设计要点：
 - **基于单例连接池**：使用 ``app.core.redis.get_redis()`` 获取进程级单例。

@@ -7,7 +7,7 @@
   ``RedisSettings`` 配置段。
 - **缓存层降级**：连接失败（build/ping）不阻断应用启动——记 warning + 清空单例
   降级运行；Redis 属非核心依赖（仅 DB 等核心层 fail-fast），调用方首次使用若仍
-  不可用由 ``app/repositories/cache.py`` 转 BizException。
+  不可用由 ``app/utils/cache.py`` 转 BizException。
 - **lifespan 接入**：应用启动时调用 ``init_redis`` 建立连接，关闭时调用
   ``close_redis`` 释放连接池。
 

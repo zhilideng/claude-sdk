@@ -1,0 +1,9 @@
+"""业务编排层（Service）。
+
+位于 api 与 repositories 之间：向上对 api 提供业务能力，向下调 repository 取数。
+本层承载业务逻辑与编排（如「查不到则报 404」「多源数据组合」），不直接接触底层
+ORM 查询语句——查询细节封装在 repositories 层。
+"""
+from app.services.user_service import UserService
+
+__all__ = ["UserService"]

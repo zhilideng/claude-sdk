@@ -21,7 +21,13 @@ from sqlalchemy.ext.asyncio import (
 from loguru import logger
 
 from app.core.settings import DBSettings
-from app.exceptions.base import BizException
+from app.exceptions.base import (
+    DB_ERRNO_CONNECT_FAILED,
+    DB_ERRNO_DISPOSE_FAILED,
+    DB_ERRNO_ENGINE_CREATE_FAILED,
+    DB_ERRNO_NOT_INITIALIZED,
+    BizException,
+)
 
 
 # 模块级变量（惰性初始化）
@@ -76,7 +82,7 @@ def _create_engine(db_settings: DBSettings):
         logger.error("数据库引擎创建失败: {}", exc)
         raise BizException(
             message="数据库引擎创建失败",
-            errno="DB_ENGINE_CREATE_FAILED",
+            errno=DB_ERRNO_ENGINE_CREATE_FAILED,
         ) from exc
 
 
@@ -141,7 +147,7 @@ async def init_db(db_settings: DBSettings):
         logger.error("数据库连通性预检失败 | url={}", db_settings.url.split("@")[-1])
         raise BizException(
             message="数据库连通性预检失败，请检查 DB 是否可达",
-            errno="DB_CONNECT_FAILED",
+            errno=DB_ERRNO_CONNECT_FAILED,
         ) from exc
 
     logger.info("数据库连通性预检通过（SELECT 1）| 初始化完成")
@@ -166,7 +172,7 @@ async def dispose_db():
         logger.error("数据库连接池释放失败: {}", exc)
         raise BizException(
             message="数据库连接池释放失败",
-            errno="DB_DISPOSE_FAILED",
+            errno=DB_ERRNO_DISPOSE_FAILED,
         ) from exc
     finally:
         _engine = None
@@ -188,7 +194,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     if session_maker is None:
         raise BizException(
             message="数据库未初始化",
-            errno="DB_NOT_INITIALIZED",
+            errno=DB_ERRNO_NOT_INITIALIZED,
         )
 
     async with session_maker() as session:

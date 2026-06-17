@@ -6,6 +6,11 @@
 即可使用，无需关心内部文件组织。
 """
 from app.exceptions.base import (
+    DB_ERRNO_CONNECT_FAILED,
+    DB_ERRNO_DISPOSE_FAILED,
+    DB_ERRNO_ENGINE_CREATE_FAILED,
+    DB_ERRNO_NOT_INITIALIZED,
+    DB_ERRNO_QUERY_FAILED,
     BizAuthError,
     BizException,
     BizForbiddenError,
@@ -20,5 +25,10 @@ __all__ = [
     "BizAuthError",
     "BizForbiddenError",
     "BizValidationError",
+    "DB_ERRNO_ENGINE_CREATE_FAILED",
+    "DB_ERRNO_CONNECT_FAILED",
+    "DB_ERRNO_QUERY_FAILED",
+    "DB_ERRNO_DISPOSE_FAILED",
+    "DB_ERRNO_NOT_INITIALIZED",
     "register_exception_handlers",
 ]

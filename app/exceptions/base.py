@@ -66,3 +66,17 @@ class BizValidationError(BizException):
     status_code = 422
     errno = 10422
     message = "参数校验失败"
+
+
+# ── 基础设施错误码（2xxxx 段：DB / Redis / ES ...）──────────────────────
+# errno 全系统统一为 **int**（与 BizException.errno: int / ApiResponse.errno 对齐，
+# 严禁字符串，否则前端拿到的 errno 类型不稳定）。编码分段约定：
+# - HTTP 类异常：``1`` + HTTP 码（404 -> 10404、401 -> 10401 ...）；
+# - 业务自定义：``1xxxx`` 业务段；
+# - 基础设施层故障（DB / 缓存 / 检索引擎等）：``2xxxx`` 段，与上两者互不混淆。
+# 集中定义于此外避免魔法数字散落各调用点；新增基础设施错误码在此追加常量。
+DB_ERRNO_ENGINE_CREATE_FAILED = 20001  # 数据库引擎创建失败
+DB_ERRNO_CONNECT_FAILED = 20002  # 连通性预检失败（启动期 fail-fast）
+DB_ERRNO_QUERY_FAILED = 20003  # 查询执行失败（运行期）
+DB_ERRNO_DISPOSE_FAILED = 20004  # 连接池释放失败（关闭期）
+DB_ERRNO_NOT_INITIALIZED = 20005  # 使用前未初始化
