@@ -41,7 +41,7 @@ class AppSettings(BaseModel):
     loop: str = "auto"  # 事件循环：auto=优先 uvloop 回退 asyncio；亦可显式 uvloop/asyncio
     limit_concurrency: int | None = None  # 最大并发连接数（背压保护）；None=不限
     timeout_keep_alive: int = 5  # keep-alive 超时秒数
-    access_log: bool = True  # 是否记录 uvicorn 访问日志（接 loguru，生产排查/审计用）
+    access_log: bool = False  # uvicorn 自带访问日志：已由 AccessLog 中间件接管（见 app/middleware/access_log.py，能带 request_id），此处关闭避免重复打印
 
 
 class LoggingSettings(BaseModel):

@@ -7,6 +7,7 @@ from app.api.routes import register_routes
 from app.core.config import Settings, get_settings
 from app.core.logger import intercept_uvicorn_logs, logger, setup_logging
 from app.exceptions import register_exception_handlers as register_exception
+from app.middleware.access_log import setup_access_log
 from app.middleware.cors import setup_cors
 from app.middleware.request_id import setup_request_id
 
@@ -53,19 +54,22 @@ def register_exception_handlers(app: FastAPI) -> None:
 def register_middlewares(app: FastAPI) -> None:
     """注册中间件（作为「路由→异常→中间件」注册链的最后阶段）。
 
-    注册顺序（按 add_middleware 调用顺序，先注册的外层）：
-    1. CORS —— 预检请求最先处理（OPTIONS 直接返回）。
-    2. RequestID —— 在 CORS 之后、业务中间件之前注册，确保：
-       - 日志尽早带上 request_id（便于全链路追踪）；
-       - 响应头回写 X-Request-Id（透传给下游）。
-    3. （待加）JWT 认证 / 限流等业务中间件。
+    注册顺序（starlette 语义：``add_middleware`` 后注册者位于更**外层**，
+    故请求进入顺序 = 下面自下而上的逆序 → RequestID 最外、CORS 最内）：
+    1. CORS（最先 add → 最内层）—— 预检 OPTIONS 在此处理并直接返回。
+    2. AccessLog（中间层，须在 RequestID 内层）—— 在 request_id contextvar
+       活跃时打访问日志（带 method/path/status/耗时），接管 uvicorn access log。
+    3. RequestID（最后 add → 最外层）—— 尽早 set request_id，确保下游所有日志
+       （含 AccessLog）都能带上 id；响应头回写 X-Request-Id。
 
     已接入：
     - CORS 跨域中间件（全放行策略，见 ``app/middleware/cors.py``）；
-    - RequestID 中间件（追踪请求 id，见 ``app/middleware/request_id.py``）。
+    - AccessLog 访问日志中间件（见 ``app/middleware/access_log.py``）；
+    - RequestID 追踪中间件（见 ``app/middleware/request_id.py``）。
 
     待加：
     - JWT 认证 / 限流等业务中间件。
     """
     setup_cors(app)
+    setup_access_log(app)
     setup_request_id(app)
