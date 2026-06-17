@@ -63,13 +63,14 @@ def register_middlewares(app: FastAPI) -> None:
        （含 AccessLog）都能带上 id；响应头回写 X-Request-Id。
 
     已接入：
-    - CORS 跨域中间件（全放行策略，见 ``app/middleware/cors.py``）；
+    - CORS 跨域中间件（策略由 ``CorsSettings`` 驱动，dev/test 全放行 / prod 收敛白名单，见 ``app/middleware/cors.py``）；
     - AccessLog 访问日志中间件（见 ``app/middleware/access_log.py``）；
     - RequestID 追踪中间件（见 ``app/middleware/request_id.py``）。
 
     待加：
     - JWT 认证 / 限流等业务中间件。
     """
-    setup_cors(app)
+    # CORS 策略由 CorsSettings 驱动（dev/test 全放行 / prod 收敛白名单）
+    setup_cors(app, get_settings().cors)
     setup_access_log(app)
     setup_request_id(app)

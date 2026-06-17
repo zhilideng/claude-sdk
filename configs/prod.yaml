@@ -38,3 +38,14 @@ redis:
   max_connections: 50  # 连接池最大连接数（生产可适当放大）
   decode_responses: true  # 自动解码响应为 str
   encoding: utf-8  # 字符编码
+
+cors:
+  # 生产收敛为白名单（安全合规）。allow_origins 真值走环境变量注入：
+  # APP__CORS__ALLOW_ORIGINS（JSON 数组格式，如 ["https://app.example.com"]）
+  allow_origins:
+    - https://example.com  # 占位域名，上线前替换为真实前端域名
+  allow_methods: [GET, POST, PUT, DELETE, PATCH, OPTIONS]  # REST 全集
+  allow_headers: [Authorization, Content-Type, X-Request-Id]  # 含 RequestID 入站头
+  allow_credentials: false  # JWT 走 Authorization 头，无 cookie 凭证；若改 true 须确保 origins 无通配
+  expose_headers: [X-Request-Id]  # 允许前端读取响应里的 request_id（追踪链闭环）
+  max_age: 600  # 预检缓存秒数

@@ -15,16 +15,18 @@
 - ``AppSettings`` —— 应用通用配置（名称、环境、host/port、debug、log_level）；
 - ``LoggingSettings`` —— 日志配置（级别/序列化/目录/轮转/保留/压缩/diagnose/enqueue）；
 - ``DBSettings`` —— 数据库配置（连接串/连接池/echo）；
-- ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）。
+- ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）；
+- ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）。
 
-注：HTTP 客户端参数与 CORS 策略当前均写死（分别见 ``app/utils/http_client.py``
-与 ``app/middleware/cors.py``），不进配置；将来需按环境调优时再改配置驱动。
+注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
+CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
 """
 from app.core.settings.settings import (
     AppSettings,
+    CorsSettings,
     DBSettings,
     LoggingSettings,
     RedisSettings,
 )
 
-__all__ = ["AppSettings", "LoggingSettings", "DBSettings", "RedisSettings"]
+__all__ = ["AppSettings", "LoggingSettings", "DBSettings", "RedisSettings", "CorsSettings"]

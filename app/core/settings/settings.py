@@ -15,10 +15,11 @@
 - ``AppSettings`` —— 应用通用配置（名称、环境、host/port、debug、log_level）；
 - ``LoggingSettings`` —— 日志配置（级别/序列化/目录/轮转/保留/压缩/diagnose/enqueue）；
 - ``DBSettings`` —— 数据库配置（连接串/连接池/echo）；
-- ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）。
+- ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）；
+- ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）。
 
-注：HTTP 客户端参数与 CORS 跨域策略当前均写死（分别见 ``app/utils/http_client.py``
-与 ``app/middleware/cors.py``），不进配置；将来需按环境调优时再改配置驱动。
+注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
+CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
 """
 from pydantic import BaseModel
 
@@ -88,3 +89,26 @@ class RedisSettings(BaseModel):
     max_connections: int = 20  # 连接池最大连接数
     decode_responses: bool = True  # 是否自动解码响应为 str（存对象时需 JSON 序列化）
     encoding: str = "utf-8"  # 字符编码（decode_responses=True 时生效）
+
+
+class CorsSettings(BaseModel):
+    """跨域（CORS）配置段（对应 yaml 的 cors 段）。
+
+    驱动 ``app/middleware/cors.py`` 的 CORS 中间件策略。各环境按需收敛：
+    - dev/test：全放行（``allow_origins=["*"]``），开发友好；
+    - prod：收敛为明确域名 / 方法 / 头部白名单（安全合规）。
+
+    安全约束：``allow_origins=["*"]`` 与 ``allow_credentials=True`` 是浏览器
+    拒绝的非法组合——故 dev/test 全放行时 credentials 须固定 False；prod 收敛为
+    具体域名后若需放开 credentials，必须保证 origins 不含通配 ``*``。
+
+    环境变量覆盖：list 字段（如 ``allow_origins``）经环境变量注入时须用 **JSON 数组**
+    格式，例：``APP__CORS__ALLOW_ORIGINS=["https://a.com","https://b.com"]``。
+    """
+
+    allow_origins: list[str] = ["*"]  # 允许的来源；prod 须收敛为具体域名清单
+    allow_methods: list[str] = ["*"]  # 允许的 HTTP 方法；prod 收敛为 REST 全集
+    allow_headers: list[str] = ["*"]  # 允许的请求头；prod 收敛为白名单
+    allow_credentials: bool = False  # 是否允许携带凭证；origins 通配时必须 False
+    expose_headers: list[str] = []  # 允许前端 JS 读取的响应头；prod 收敛为白名单
+    max_age: int = 600  # 预检缓存秒数
