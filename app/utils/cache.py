@@ -15,6 +15,8 @@
 import json
 from typing import Any, Callable, Optional, TypeVar
 
+from redis.exceptions import RedisError
+
 from app.core.logger import logger
 from app.core.redis import get_redis
 from app.exceptions import BizException
@@ -70,7 +72,7 @@ async def cache_set(key: str, value: Any, ttl: Optional[int] = None) -> None:
         else:
             await redis.set(key, serialized)
             logger.debug("缓存已设置（永不过期）: {}", key)
-    except (OSError, redis.RedisError) as exc:
+    except (OSError, RedisError) as exc:
         raise BizException(f"缓存写入失败: {key}，原因: {exc}") from exc
 
 
@@ -87,7 +89,7 @@ async def cache_delete(key: str) -> None:
     try:
         await redis.delete(key)
         logger.debug("缓存已删除: {}", key)
-    except (OSError, redis.RedisError) as exc:
+    except (OSError, RedisError) as exc:
         raise BizException(f"缓存删除失败: {key}，原因: {exc}") from exc
 
 
