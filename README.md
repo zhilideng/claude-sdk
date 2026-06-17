@@ -76,8 +76,8 @@ arch-fastapi /                           # 项目根目录
 │   ├── test.yaml                     # 测试环境配置
 │   └── prod.yaml                     # 生产环境配置
 │
-├── main.py                           # 项目启动入口
-│                                     # uvicorn main:app
+├── main.py                           # 项目启动入口（factory 模式）
+│                                     # uvicorn "app.factory:create_app" --factory
 │
 ├── requirements.txt                  # Python依赖
 │
