@@ -30,6 +30,9 @@ async def lifespan(app: FastAPI):
     # 关闭：释放数据库连接池
     from app.core.database import dispose_db
     await dispose_db()
+    # 关闭：释放全局 HTTP 客户端连接池（与 startup 惰性创建的 get_client 对称）
+    from app.utils.http_client import close_client
+    await close_client()
 
 
 def create_app() -> FastAPI:
@@ -44,5 +47,3 @@ def create_app() -> FastAPI:
     startup.register_exception_handlers(app)
     startup.register_middlewares(app)
     return app
-
-

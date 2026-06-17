@@ -7,8 +7,8 @@
 from app.core.server import run
 from app.factory import create_app
 
-# 模块级 app：供 `uvicorn main:app` 加载
 app = create_app()
+
 
 
 if __name__ == "__main__":
