@@ -67,6 +67,7 @@ api/        Controller 层：FastAPI 路由、参数校验、结果返回
 - **LLM 访问收敛**：所有模型调用经 `core/llm/`，便于切换厂商与统一计费/限流。
 - **代码注释用中文**：所有新增代码的注释一律使用中文，包括模块 / 类 / 函数的 docstring 与行内说明；变量、函数、类等命名仍遵循 PEP 8 用英文。
 - **Git 提交信息用中文**：所有 commit 的标题与正文一律用中文描述，不写英文 message；类型前缀用中文动词（新增 / 修复 / 重构 / 文档 / 配置 / 测试 / 杂项）替代英文 conventional 前缀（feat / fix / refactor / docs / chore / test），例如写「新增：配置中心多源加载」而非「feat(config): add multi-source loading」。
+- **tests/ 目录按约定不入库（无需反复提及）**：`.gitignore` 已忽略整个 `tests/` 目录，这是**明确的项目约定**，不是误操作——测试代码只作为本地资产存在、不进版本库。故：① `git status`/提交时看不到 `tests/*.py` 是预期行为，**不要**把"测试文件未入库"当作异常去提醒或建议改 `.gitignore`；② 改动 `app/` 代码时配套写的本地测试照常跑（conda 环境），CLAUDE.md 里记录的测试数量反映的是**本地实际状态**，与 git 里是否存在测试文件无关；③ 提交只含 `app/` 生产代码 + 文档，测试文件不 `git add`。
 
 ## 开发命令
 
