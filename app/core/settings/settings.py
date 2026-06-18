@@ -21,7 +21,7 @@
 注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
 CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 
 class AppSettings(BaseModel):
@@ -106,9 +106,24 @@ class CorsSettings(BaseModel):
     格式，例：``APP__CORS__ALLOW_ORIGINS=["https://a.com","https://b.com"]``。
     """
 
-    allow_origins: list[str] = ["*"]  # 允许的来源；prod 须收敛为具体域名清单
-    allow_methods: list[str] = ["*"]  # 允许的 HTTP 方法；prod 收敛为 REST 全集
-    allow_headers: list[str] = ["*"]  # 允许的请求头；prod 收敛为白名单
+    allow_origins: list[str] = Field(
+        default_factory=lambda: ["*"]
+    )  # 允许的来源；prod 须收敛为具体域名清单
+    allow_methods: list[str] = Field(
+        default_factory=lambda: ["*"]
+    )  # 允许的 HTTP 方法；prod 收敛为 REST 全集
+    allow_headers: list[str] = Field(
+        default_factory=lambda: ["*"]
+    )  # 允许的请求头；prod 收敛为白名单
     allow_credentials: bool = False  # 是否允许携带凭证；origins 通配时必须 False
-    expose_headers: list[str] = []  # 允许前端 JS 读取的响应头；prod 收敛为白名单
+    expose_headers: list[str] = Field(
+        default_factory=list
+    )  # 允许前端 JS 读取的响应头；prod 收敛为白名单
     max_age: int = 600  # 预检缓存秒数
+
+    @model_validator(mode="after")
+    def validate_credentials_with_origins(self) -> "CorsSettings":
+        """禁止通配来源与 credentials=true 的非法组合。"""
+        if self.allow_credentials and "*" in self.allow_origins:
+            raise ValueError("CORS allow_credentials=true 时 allow_origins 不能包含 '*'")
+        return self
