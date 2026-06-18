@@ -10,7 +10,7 @@
 - 出站：响应头回写 ``X-Request-Id``（实际使用的 id，透传或新生成）。
 
 使用方式：
-- 中间件注册：由 ``startup.register_middlewares`` 调用 ``setup_request_id(app)``。
+- 中间件注册：由 ``app.server.register_middlewares`` 调用 ``setup_request_id(app)``。
 - 读取当前请求 id：调用 ``get_request_id()``（异步安全，返回 str | None）。
 """
 import contextvars
@@ -77,11 +77,11 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 def setup_request_id(app: FastAPI) -> None:
     """为 FastAPI 应用注册 RequestID 中间件（策略写死，不进配置）。
 
-    中间件顺序（在 ``startup.register_middlewares`` 中）：
+    中间件顺序（在 ``app.server.register_middlewares`` 中）：
     - RequestID 在 CORS 之后注册（CORS 先处理预检，RequestID 再生成 id）。
     - RequestID 在业务中间件（如 JWT/限流）之前注册，确保日志尽早带 id。
 
-    作为中间件，由 ``startup.register_middlewares`` 在「路由→异常→中间件」
+    作为中间件，由 ``app.server.register_middlewares`` 在「路由→异常→中间件」
     注册链调用。
     """
     app.add_middleware(RequestIDMiddleware)

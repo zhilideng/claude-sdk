@@ -7,7 +7,7 @@
 - 进程级单例：engine 和 sessionmaker 全局唯一，复用连接池（参考 http_client.py）；
 - 配置驱动：所有连接参数从 DBSettings 读取，便于按环境调优；
 - 失败统一：数据库异常 raise BizException(...)，由全局 handler 转统一响应；
-- 生命周期：init_db 在 factory.py lifespan 启动时调用，dispose_db 关闭时调用。
+- 生命周期：init_db 在 server.py lifespan 启动时调用，dispose_db 关闭时调用。
 """
 from functools import lru_cache
 from typing import AsyncGenerator
@@ -103,7 +103,7 @@ def get_engine():
     """获取数据库引擎单例（进程级唯一）。
 
     注意：首次调用前必须先调用 init_db(db_settings)，否则返回 None。
-    此设计供 factory.py lifespan 显式初始化后，其他模块通过此函数获取。
+    此设计供 server.py lifespan 显式初始化后，其他模块通过此函数获取。
     """
     return _engine
 

@@ -20,7 +20,7 @@ from app.core.settings import CorsSettings
 def setup_cors(app: FastAPI, cors: CorsSettings) -> None:
     """为 FastAPI 应用注册 CORS 中间件（策略由 ``CorsSettings`` 驱动）。
 
-    作为中间件，由 ``startup.register_middlewares`` 在「路由→异常→中间件」
+    作为中间件，由 ``app.server.register_middlewares`` 在「路由→异常→中间件」
     注册链的最后阶段调用，确保异常 handler 优先级高于跨域处理。
 
     各字段含义见 ``CorsSettings``：``allow_origins`` 决定来源白名单，

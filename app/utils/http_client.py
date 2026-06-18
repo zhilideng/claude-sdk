@@ -15,7 +15,7 @@
 - **统一日志**：每次请求记 method+url，响应记 status+耗时(ms)，重试记
   第几次+原因+等待秒。
 
-注意：需在应用关闭时调用 ``close_client()`` 关闭单例（已接入 factory.py
+注意：需在应用关闭时调用 ``close_client()`` 关闭单例（已接入 server.py
 lifespan shutdown）。
 """
 import asyncio
@@ -98,7 +98,7 @@ async def close_client() -> None:
     """关闭单例 client 并置空。
 
     需在应用关闭（lifespan shutdown）时调用，确保底层连接池优雅释放。
-    已由 ``app.factory.lifespan`` shutdown 统一调用。
+    已由 ``app.server.lifespan`` shutdown 统一调用。
     """
     global _client
     if _client is not None:

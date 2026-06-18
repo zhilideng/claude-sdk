@@ -11,7 +11,7 @@
 - **lifespan 接入**：应用启动时调用 ``init_redis`` 建立连接，关闭时调用
   ``close_redis`` 释放连接池。
 
-注意：需在应用关闭时调用 ``close_redis()`` 关闭单例（factory.py lifespan 已接入）。
+注意：需在应用关闭时调用 ``close_redis()`` 关闭单例（server.py lifespan 已接入）。
 """
 from typing import Optional
 
@@ -85,7 +85,7 @@ async def init_redis(settings: RedisSettings) -> None:
 async def close_redis() -> None:
     """关闭 Redis 单例连接池（应用关闭时调用）。
 
-    需在 factory.py lifespan shutdown 时调用，确保连接池优雅释放。
+    需在 server.py lifespan shutdown 时调用，确保连接池优雅释放。
     """
     global _redis_client
     if _redis_client is not None:

@@ -56,11 +56,8 @@ arch-fastapi /                           # 项目根目录
 │   │   └── prompt/                   # Prompt管理中心
 │   │                                 # Prompt模板加载与版本管理
 │   │
-│   ├── startup.py                    # 系统启动注册
-│   │                                 # 注册路由、中间件、数据库连接等
-│   │
-│   ├── factory.py                    # 应用工厂
-│   │                                 # 创建FastAPI实例
+│   ├── server.py                     # 应用服务器组装与运行
+│   │                                 # create_app / lifespan / uvicorn 参数
 │   │
 │   └── __init__.py
 │
@@ -77,7 +74,7 @@ arch-fastapi /                           # 项目根目录
 │   └── prod.yaml                     # 生产环境配置
 │
 ├── main.py                           # 项目启动入口（factory 模式）
-│                                     # uvicorn "app.factory:create_app" --factory
+│                                     # uvicorn "app.server:create_app" --factory
 │
 ├── requirements.txt                  # Python依赖
 │
