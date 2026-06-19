@@ -88,10 +88,6 @@ def get_llm(name: str | None = None) -> openai.AsyncOpenAI:
     return client
 
 
-def get_provider(name: str | None = None) -> openai.AsyncOpenAI:
-    """获取 LLM 客户端实例的兼容入口。"""
-    return get_llm(name)
-
 
 def get_langchain_llm(name: str | None = None) -> Any:
     """获取已初始化的 LangChain ChatModel 实例。"""
@@ -105,13 +101,9 @@ def get_langchain_llm(name: str | None = None) -> Any:
     return model
 
 
-def get_langchain_model(name: str | None = None) -> Any:
-    """获取 LangChain ChatModel 实例的别名入口。"""
-    return get_langchain_llm(name)
-
-
 def build_langchain_llm(name: str, cfg: LlmProviderConfig) -> Any:
     """创建 LangChain ChatModel 实例。"""
+    configure_langsmith_tracing()
     try:
         from langchain.chat_models import init_chat_model
     except ImportError as exc:

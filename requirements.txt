@@ -27,3 +27,4 @@ fakeredis>=2.23  # Redis 测试用 FakeRedis（已预装）
 # 未来深度用 agent 能力时再评估升级到 anthropic SDK 双轨）。
 openai>=1.40  # OpenAI 官方 SDK（AsyncOpenAI 异步客户端 + 内置重试/超时）
 langchain==1.3.9  # LangChain init_chat_model 入口（业务需要 LCEL / Agent 时复用网关配置）
+langchain-openai>=1.0.0  # LangChain 的 OpenAI 兼容 ChatModel provider（init_chat_model(model_provider="openai") 必需）
