@@ -326,4 +326,4 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 
 ## License
 
-当前仓库尚未声明开源许可证。对外发布前建议补充 `LICENSE` 文件。
+本项目基于 [MIT License](./LICENSE) 开源。
