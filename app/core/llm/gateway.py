@@ -1,130 +1,209 @@
-"""LLM 网关工厂与进程级单例管理。
-
-设计要点：
-- 进程级 ``_providers`` 字典缓存全部已注册 Provider 单例。``init_llm`` 启动期
-  遍历配置 ``providers`` 构造（``AsyncOpenAI`` 构造廉价、不连云，故启动期建
-  无网络开销）；
-- ``get_provider(name=None)`` 返回指定 Provider（``None`` 回退 ``default_provider``），
-  未知名字或未初始化抛 ``BizException``（fail-loud，避免静默用错 Provider）；
-- ``close_llm`` 关闭全部 Provider client，接入 ``app.server.lifespan`` shutdown；
-- **不在启动期对云端做 ping 预检**——LLM 调用是付费网络调用，不适合启动 fail-fast；
-  连通性由首次真实调用暴露（失败转 ``BizException``）。与 DB「启动期预检 fail-fast」
-  对照，LLM 按 ``http_client`` 模式「惰性、调用时失败转异常」。
-
-多 Provider 切换：上层 ``get_provider("deepseek")`` 即可换厂商，无需改业务代码——
-这是「多模型 Provider」的统一入口。
-"""
+"""LLM 网关：统一管理原生 Provider 与 LangChain 模型实例。"""
 from __future__ import annotations
 
+import os
+from typing import Any
 from typing import Optional
 
 from app.core.llm.base import BaseLLM
 from app.core.llm.openai_provider import OpenAIProvider
 from app.core.logger import logger
-from app.core.settings import LlmSettings
+from app.core.settings import LlmProviderConfig, LlmSettings
 from app.exceptions import (
     BizException,
+    LLM_ERRNO_CALL_FAILED,
     LLM_ERRNO_NOT_INITIALIZED,
     LLM_ERRNO_PROVIDER_NOT_FOUND,
 )
 
-# 进程级 Provider 单例缓存：name -> Provider 实例。
-# 多 worker 进程各自独立持有；asyncio 单线程内无并发竞争，无需锁。
-_providers: dict[str, BaseLLM] = {}
-# 默认 Provider 名（init_llm 时从配置读取缓存，避免每次 get_provider 都查 settings）
-_default_provider: str = ""
+providers: dict[str, BaseLLM] = {}
+langchain_models: dict[str, Any] = {}
+provider_configs: dict[str, LlmProviderConfig] = {}
+default_provider_name: str = ""
 
 
 def init_llm(settings: LlmSettings) -> None:
-    """启动期初始化：按配置构造全部 Provider 单例。
+    """按配置初始化原生 LLM Provider 与 LangChain ChatModel 实例。
 
-    遍历 ``settings.providers`` 为每个 Provider 建一个 ``OpenAIProvider`` 实例
-    （``AsyncOpenAI`` 构造廉价、不连云，故启动期建无网络开销）。
-
-    空配置（``providers`` 为空）时不抛异常——网关降级为「无 Provider 可用」，
-    首次 ``get_provider`` 时才 fail-loud。这允许「未配置 LLM 的环境正常启动」
-    （如纯 DB/Redis 服务），仅在真正调用 LLM 时才报错。
-
-    Args:
-        settings: LLM 配置段（含 ``default_provider`` 与 ``providers`` 字典）。
+    启动期一次性完成两类实例创建，把 LangChain 初始化成本放在应用启动阶段，
+    避免首次业务请求因为模型初始化而增加耗时。
     """
-    global _default_provider
-    _providers.clear()
-    _default_provider = settings.default_provider
+    global default_provider_name
+    providers.clear()
+    langchain_models.clear()
+    provider_configs.clear()
+    default_provider_name = settings.default_provider
 
     for name, cfg in settings.providers.items():
         try:
-            _providers[name] = OpenAIProvider(name, cfg)
+            providers[name] = OpenAIProvider(name, cfg)
         except Exception as exc:  # noqa: BLE001 —— 构造失败不阻断启动
-            # LLM 属非核心依赖：单个 Provider 构造失败（如 api_key 缺失导致 openai
-            # SDK 凭证校验抛错）时跳过并降级运行，与 Redis「连不上降级」哲学一致。
-            # 这避免「未配密钥的环境无法启动应用」——真正调用该 Provider 时才由
-            # get_provider（未注册）/ 调用失败（凭证无效）暴露问题。
             logger.warning(
                 "LLM Provider 构造失败，已跳过（降级运行）| name={} | {}",
                 name,
                 exc,
             )
             continue
+        provider_configs[name] = cfg
+        try:
+            langchain_models[name] = build_langchain_llm(name, cfg)
+        except BizException as exc:
+            logger.warning(
+                "LangChain LLM 构造失败，已跳过（降级运行）| name={} | {}",
+                name,
+                exc,
+            )
         logger.info(
-            "LLM Provider 已注册 | name={} | base_url={} | default_model={}",
+            "LLM Provider 已注册 | name={} | base_url={} | model={}",
             name,
             cfg.base_url,
             cfg.default_model,
         )
-    if _providers:
+    if providers:
         logger.info(
-            "LLM 网关初始化完成 | 已注册 {} 个 Provider | default={}",
-            len(_providers),
-            _default_provider,
+            "LLM 网关初始化完成 | providers={} | default={}",
+            sorted(providers),
+            default_provider_name,
         )
     else:
         logger.warning("LLM 网关初始化完成但未注册任何 Provider（providers 配置为空，降级运行）")
 
 
-def get_provider(name: Optional[str] = None) -> BaseLLM:
-    """获取 Provider 单例。
+def get_llm(name: Optional[str] = None) -> BaseLLM:
+    """获取原生 LLM Provider 实例。
 
-    Args:
-        name: Provider 名；``None`` 用配置的 ``default_provider``。
-
-    Returns:
-        对应的 ``BaseLLM`` 实例。
-
-    Raises:
-        BizException: 未初始化（``_providers`` 空）或 ``name`` 不存在（fail-loud）。
+    ``name`` 为空时使用配置里的默认 Provider；未初始化或名称不存在时抛
+    ``BizException``，避免业务静默拿到错误模型。
     """
-    if not _providers:
+    target = resolve_name(name)
+    provider = providers.get(target)
+    if provider is None:
+        raise_provider_not_found(target)
+    return provider
+
+
+def get_provider(name: Optional[str] = None) -> BaseLLM:
+    """获取原生 LLM Provider 实例的兼容入口。
+
+    旧代码如果已经使用 ``get_provider`` 可以继续运行；新业务代码建议直接使用
+    ``get_llm``，语义更明确。
+    """
+    return get_llm(name)
+
+
+def get_langchain_llm(name: Optional[str] = None) -> Any:
+    """获取 LangChain ChatModel 实例。
+
+    LangChain 实例由 ``init_llm`` 在启动期创建；这里只读取缓存，避免业务请求
+    承担初始化耗时。如果缓存不存在，说明启动期该实例初始化失败或名称配置错误。
+    """
+    target = resolve_name(name)
+    if target in langchain_models:
+        return langchain_models[target]
+
+    raise BizException(
+        f"LangChain LLM 未初始化: {target}（已初始化: {sorted(langchain_models)}）",
+        errno=LLM_ERRNO_NOT_INITIALIZED,
+    )
+
+
+def build_langchain_llm(name: str, cfg: LlmProviderConfig) -> Any:
+    """创建 LangChain ChatModel 实例。
+
+    使用与原生 Provider 相同的模型名、base_url 和密钥来源调用
+    ``init_chat_model``，保证原生调用和 LangChain 调用不会出现配置漂移。
+    """
+
+    try:
+        from langchain.chat_models import init_chat_model
+    except ImportError as exc:
+        raise BizException(
+            "LangChain 未安装，请先安装 langchain 相关依赖",
+            errno=LLM_ERRNO_CALL_FAILED,
+        ) from exc
+
+    try:
+        model = init_chat_model(
+            model=cfg.default_model,
+            model_provider="openai",
+            api_key=resolve_api_key(name, cfg),
+            base_url=cfg.base_url,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LangChain LLM 初始化失败 | name={} | {}", name, exc)
+        raise BizException(
+            f"LangChain LLM 初始化失败: {name}",
+            errno=LLM_ERRNO_CALL_FAILED,
+        ) from exc
+
+    logger.info("LangChain LLM 已初始化 | name={} | model={}", name, cfg.default_model)
+    return model
+
+
+def get_langchain_model(name: Optional[str] = None) -> Any:
+    """获取 LangChain ChatModel 实例的别名入口。
+
+    保留这个名字是为了让调用方可以选择更贴近 LangChain 习惯的命名；实现仍然
+    复用 ``get_langchain_llm``。
+    """
+    return get_langchain_llm(name)
+
+
+def resolve_name(name: Optional[str]) -> str:
+    """解析最终使用的 Provider 名称。
+
+    当调用方没有传入 ``name`` 时回退到 ``default_provider_name``；如果网关尚未
+    初始化任何原生 Provider，则直接抛未初始化异常。
+    """
+    if not providers:
         raise BizException(
             "LLM 网关未初始化（providers 为空或 init_llm 未执行）",
             errno=LLM_ERRNO_NOT_INITIALIZED,
         )
-    target = name or _default_provider
-    provider = _providers.get(target)
-    if provider is None:
-        raise BizException(
-            f"未知 LLM Provider: {target}（已注册: {sorted(_providers)}）",
-            errno=LLM_ERRNO_PROVIDER_NOT_FOUND,
-        )
-    return provider
+    return name or default_provider_name
+
+
+def resolve_api_key(name: str, cfg: LlmProviderConfig) -> str:
+    """解析 Provider 的 API Key。
+
+    优先使用配置对象里的密钥；配置为空时读取 ``LLM_API_KEY_<NAME>`` 环境变量，
+    与 ``OpenAIProvider`` 的密钥注入约定保持一致。
+    """
+    api_key = cfg.api_key.get_secret_value()
+    return api_key or os.environ.get(f"LLM_API_KEY_{name.upper()}", "")
+
+
+def raise_provider_not_found(name: str) -> None:
+    """抛出 Provider 不存在的业务异常。
+
+    错误消息带上已注册名称，方便排查配置拼写、默认 Provider 与实际注册列表不一致
+    等问题。
+    """
+    registered = sorted(provider_configs or providers)
+    raise BizException(
+        f"未知 LLM Provider: {name}（已注册: {registered}）",
+        errno=LLM_ERRNO_PROVIDER_NOT_FOUND,
+    )
 
 
 async def close_llm() -> None:
-    """关闭全部 Provider client，释放连接池。
+    """关闭原生 Provider 连接池并清空全部网关缓存。
 
-    单个 Provider 关闭失败不阻断其余（尽力释放全部资源），最后汇总抛错。
-    由 ``app.server.lifespan`` shutdown 调用。
+    单个 Provider 关闭失败不会影响其他 Provider 的释放；所有释放动作结束后再统一
+    汇总抛错，保证 shutdown 阶段尽量回收资源。
     """
-    global _default_provider
+    global default_provider_name
     errors: list[tuple[str, Exception]] = []
-    for name, provider in list(_providers.items()):
+    for name, provider in list(providers.items()):
         try:
             await provider.aclose()
         except Exception as exc:  # noqa: BLE001 —— shutdown 必须尽力释放全部 Provider
             errors.append((name, exc))
             logger.exception("LLM Provider 关闭失败 | name={} | {}", name, exc)
-    _providers.clear()
-    _default_provider = ""
+    providers.clear()
+    langchain_models.clear()
+    provider_configs.clear()
+    default_provider_name = ""
     if errors:
         detail = "; ".join(f"{n}: {e}" for n, e in errors)
         raise RuntimeError(f"LLM Provider 关闭失败: {detail}")

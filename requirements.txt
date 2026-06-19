@@ -25,3 +25,4 @@ fakeredis>=2.23  # Redis 测试用 FakeRedis（已预装）
 # Claude 经 Anthropic 官方 OpenAI 兼容端点接入（system/tool/流式细节有损，
 # 未来深度用 agent 能力时再评估升级到 anthropic SDK 双轨）。
 openai>=1.40  # OpenAI 官方 SDK（AsyncOpenAI 异步客户端 + 内置重试/超时）
+langchain==1.3.9  # LangChain init_chat_model 入口（业务需要 LCEL / Agent 时复用网关配置）
