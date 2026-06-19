@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import os
 from inspect import isawaitable
+from pathlib import Path
 from typing import Any
 
 import openai
+from dotenv import dotenv_values
 
 from app.core.logger import logger
 from app.core.settings import LlmProviderConfig, LlmSettings
@@ -32,10 +34,7 @@ def init_llm(settings: LlmSettings) -> None:
     default_provider_name = settings.default_provider
 
     for name, cfg in settings.providers.items():
-        api_key = cfg.api_key.get_secret_value() or os.environ.get(
-            f"LLM_API_KEY_{name.upper()}",
-            "",
-        )
+        api_key = resolve_api_key(name, cfg)
         try:
             llm_instances[name] = openai.AsyncOpenAI(
                 base_url=cfg.base_url,
@@ -106,6 +105,9 @@ def get_langchain_llm(name: str | None = None) -> Any:
     return model
 
 
+def get_langchain_model(name: str | None = None) -> Any:
+    """获取 LangChain ChatModel 实例的别名入口。"""
+    return get_langchain_llm(name)
 
 
 def build_langchain_llm(name: str, cfg: LlmProviderConfig) -> Any:
@@ -149,7 +151,30 @@ def resolve_name(name: str | None = None) -> str:
 def resolve_api_key(name: str, cfg: LlmProviderConfig) -> str:
     """解析 Provider 的 API Key。"""
     api_key = cfg.api_key.get_secret_value()
-    return api_key or os.environ.get(f"LLM_API_KEY_{name.upper()}", "")
+    env_name = f"LLM_API_KEY_{name.upper()}"
+    return api_key or os.environ.get(env_name, "") or read_dotenv_value(env_name)
+
+
+def read_dotenv_value(name: str) -> str:
+    """从项目根 ``.env`` 读取自定义环境变量。
+
+    pydantic-settings 会读取 ``.env`` 参与 Settings 构造，但不会把未知变量写回
+    ``os.environ``；LLM_API_KEY_<NAME> 属于网关自定义约定，故这里显式兜底读取。
+    """
+    env_path = project_root() / ".env"
+    if not env_path.exists():
+        return ""
+    value = dotenv_values(env_path).get(name)
+    return str(value).strip() if value else ""
+
+
+def project_root() -> Path:
+    """定位项目根目录。"""
+    cur = Path(__file__).resolve().parent
+    for anc in (cur, *cur.parents):
+        if (anc / ".git").exists() or (anc / "requirements.txt").exists():
+            return anc
+    return Path(__file__).resolve().parents[3]
 
 
 async def close_llm() -> None:

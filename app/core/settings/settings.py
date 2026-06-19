@@ -17,7 +17,7 @@
 - ``DBSettings`` —— 数据库配置（连接串/连接池/echo）；
 - ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）；
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
-- ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（4 家 Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
+- ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
 
 注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
 CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
@@ -133,13 +133,13 @@ class CorsSettings(BaseModel):
 class LlmProviderConfig(BaseModel):
     """单个 LLM Provider 的连接配置（对应 yaml 的 ``llm.providers.<name>`` 段）。
 
-    4 家 Provider（OpenAI / DeepSeek / Qwen / Claude）统一走 **OpenAI 兼容端点**，
+    各 Provider 统一走 **OpenAI 兼容端点**，
     靠 ``base_url`` + ``api_key`` 切换厂商，共用同一套 openai SDK 调用代码——
     这是「统一模型调用接口」的实现基石：底层一套实现覆盖全部 Provider。
 
     安全约定：``api_key`` 为 ``SecretStr``，**不写入 yaml**。注入方式：经环境变量
     ``LLM_API_KEY_<大写NAME>``（如 ``LLM_API_KEY_OPENAI``）由
-    ``app/core/llm/openai_provider.py`` 读取——pydantic-settings 对
+    ``app/core/llm/gateway.py`` 读取——pydantic-settings 对
     ``dict[str, model]`` 的深度 env 覆盖存在 key 大小写坑（环境变量里的 ``OPENAI``
     与 yaml 小写 ``openai`` 不匹配，且单独注入 ``api_key`` 会让必填的
     ``base_url`` / ``default_model`` 校验失败），故密钥不走

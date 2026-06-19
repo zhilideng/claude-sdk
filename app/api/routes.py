@@ -13,6 +13,7 @@
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.v1.llm_router import router as llm_router
 from app.api.v1.users_router import router as users_router
 
 
@@ -25,5 +26,5 @@ def register_routes(app: FastAPI) -> None:
     """
     # 基础设施路由（无版本前缀：探针/指标等固定路径）
     app.include_router(health_router)
+    app.include_router(llm_router, prefix="/v1")
     app.include_router(users_router, prefix="/v1")
-

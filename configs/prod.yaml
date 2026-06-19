@@ -52,9 +52,9 @@ cors:
 
 llm:
   default_provider: openai  # 默认 Provider（get_provider 未指定名字时回退）
-  # 4 家 Provider 统一走 OpenAI 兼容端点，靠 base_url + api_key 切换厂商。
+  # Provider 统一走 OpenAI 兼容端点，靠 base_url + api_key 切换厂商。
   # api_key 敏感，**绝不写入本文件**，生产经环境变量 / K8s Secret 注入：
-  # LLM_API_KEY_<大写NAME>（如 LLM_API_KEY_OPENAI），由 core/llm/openai_provider.py 读取。
+  # LLM_API_KEY_<大写NAME>（如 LLM_API_KEY_OPENAI），由 core/llm/gateway.py 读取。
   # timeout / max_retries 未写则用代码默认（60s / 2 次），如需调优在此显式覆盖。
   providers:
     openai:
@@ -69,3 +69,6 @@ llm:
     claude:
       base_url: https://api.anthropic.com/v1
       default_model: claude-3-5-sonnet-20241022
+    zhipu:
+      base_url: https://open.bigmodel.cn/api/paas/v4/
+      default_model: glm-4-flash
