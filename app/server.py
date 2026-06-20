@@ -100,12 +100,19 @@ async def lifespan(app: FastAPI):
 
         init_llm(settings.llm)
 
+        # skill 注册中心初始化（在 LLM 之后）：启动期只扫描 frontmatter 建索引，
+        # 请求期再懒加载正文并驱动 LLM。
+        from app.core.skills.registry import init_skills
+
+        init_skills(settings.skills)
+
         yield
     finally:
         from app.core.redis import close_redis
         from app.core.database import dispose_db
         from app.utils.http_client import close_client
         from app.core.llm.gateway import close_llm
+        from app.core.skills.registry import close_skills
 
         await _cleanup_resources(
             [
@@ -113,6 +120,7 @@ async def lifespan(app: FastAPI):
                 ("database", dispose_db),
                 ("http_client", close_client),
                 ("llm", close_llm),
+                ("skills", close_skills),
             ]
         )
 

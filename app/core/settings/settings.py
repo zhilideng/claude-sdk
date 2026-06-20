@@ -18,6 +18,7 @@
 - ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）；
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
 - ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
+- ``SkillSettings`` —— skill 注册中心配置（扫描根目录、总开关、懒加载缓存）。
 
 注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
 CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
@@ -195,3 +196,16 @@ class LlmSettings(BaseModel):
     langsmith: LangSmithConfig = Field(
         default_factory=LangSmithConfig
     )  # LangSmith 追踪配置（默认关闭，零上报）
+
+
+class SkillSettings(BaseModel):
+    """skill 注册中心配置段（对应 yaml 的 ``skills`` 段）。
+
+    驱动 ``app/core/skills/registry.py`` 的扫描根目录、总开关与懒加载缓存行为。
+    环境变量覆盖遵循当前项目根字段约定：``SKILLS__BASE_DIR`` /
+    ``SKILLS__ENABLED`` / ``SKILLS__CACHE_LOADED``。
+    """
+
+    enabled: bool = True  # 总开关；false 时注册中心空运行
+    base_dir: str = "app/skills"  # skill 内容根目录（相对项目根）
+    cache_loaded: bool = True  # 是否缓存懒加载的 SkillBundle

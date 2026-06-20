@@ -19,6 +19,7 @@
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
 - ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（各 Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
 - ``LangSmithConfig`` —— LangSmith 追踪配置（挂 ``LlmSettings.langsmith``；enabled 默认 false 零上报，api_key 走 ``LANGCHAIN_API_KEY`` 环境变量）。
+- ``SkillSettings`` —— skill 注册中心配置（扫描根目录、总开关、懒加载缓存）。
 
 注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
 CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段）；LLM 网关参数亦配置驱动
@@ -33,6 +34,7 @@ from app.core.settings.settings import (
     LlmSettings,
     LoggingSettings,
     RedisSettings,
+    SkillSettings,
 )
 
 __all__ = [
@@ -44,4 +46,5 @@ __all__ = [
     "LlmProviderConfig",
     "LlmSettings",
     "LangSmithConfig",
+    "SkillSettings",
 ]

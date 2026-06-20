@@ -89,3 +89,13 @@ LLM_ERRNO_NOT_INITIALIZED = 21001  # LLM 网关未初始化即调用（init_llm 
 LLM_ERRNO_PROVIDER_NOT_FOUND = 21002  # 请求的 Provider 名不在配置 providers 字典中
 LLM_ERRNO_CALL_FAILED = 21003  # 模型调用失败（网络异常 / 超时 / 非 2xx 响应 / 重试用尽）
 LLM_ERRNO_INVALID_RESPONSE = 21004  # 响应解析失败（结构异常 / 必需字段缺失）
+
+# ── Skill 错误码（2xxxx 段的 23xxx 子段：skill 注册中心层）──────────────
+# skill 注册中心同属横向基础设施层（core/skills/，与 DB/Redis/LLM 并列），
+# 故遵循「基础设施层故障走 2xxxx 段」约定。DB 用 20xxx、LLM 用 21xxx、Redis
+# 预留 22xxx，skill 用 23xxx 子段，按基础设施子类分段互不混淆。
+SKILL_ERRNO_NOT_INITIALIZED = 23001  # 注册中心未初始化 / 关闭 / 空索引
+SKILL_ERRNO_NOT_FOUND = 23002  # 请求的 skill 名不在注册索引中
+SKILL_ERRNO_LOAD_FAILED = 23003  # SKILL.md 加载或解析失败
+SKILL_ERRNO_DISABLED = 23004  # skill 存在但 enabled=false
+SKILL_ERRNO_RUN_FAILED = 23005  # skill 执行失败（LLM 调用失败等）

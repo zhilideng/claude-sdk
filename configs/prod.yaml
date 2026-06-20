@@ -50,6 +50,11 @@ cors:
   expose_headers: [X-Request-Id]  # 允许前端读取响应里的 request_id（追踪链闭环）
   max_age: 600  # 预检缓存秒数
 
+skills:
+  enabled: true  # skill 注册中心总开关；false 时空运行
+  base_dir: app/skills  # skill 内容根目录（相对项目根；生产可经 SKILLS__BASE_DIR 挂载覆盖）
+  cache_loaded: true  # 是否缓存懒加载的 SkillBundle
+
 llm:
   default_provider: openai  # 默认 Provider（get_provider 未指定名字时回退）
   # Provider 统一走 OpenAI 兼容端点，靠 base_url + api_key 切换厂商。

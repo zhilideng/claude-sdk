@@ -28,6 +28,7 @@ from app.core.settings import (
     LlmSettings,
     LoggingSettings,
     RedisSettings,
+    SkillSettings,
 )
 
 # 允许的环境标识，与 configs/ 下的 yaml 文件名一一对应
@@ -89,6 +90,7 @@ class Settings(BaseSettings):
     redis: RedisSettings = RedisSettings()  # Redis 缓存配置段（驱动 redis.py）
     cors: CorsSettings = CorsSettings()  # 跨域配置段（驱动 cors.py）
     llm: LlmSettings = LlmSettings()  # LLM 网关配置段（驱动 core/llm/）
+    skills: SkillSettings = SkillSettings()  # skill 注册中心配置段（驱动 core/skills/）
 
     @classmethod
     def settings_customise_sources(
