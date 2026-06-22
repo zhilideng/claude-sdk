@@ -16,7 +16,6 @@ app:
 
 logging:
   level: WARNING
-  serialize: true   # prod 开 JSON：结构化输出供 ELK/Loki 聚合
   dir: logs
   rotation: "00:00"   # 按天轮转：每天 0 点分割，文件名带日期便于归档
   retention: 30 days

@@ -56,7 +56,6 @@ class LoggingSettings(BaseModel):
     """
 
     level: str = "INFO"  # logger 级别
-    serialize: bool = True  # 统一 JSON 输出（全环境，便于聚合系统解析）
     dir: str = "logs"  # 日志目录（相对项目根）
     rotation: str = "00:00"  # 按天轮转（每天 00:00 触发；如需可改大小如 "20 MB"）
     retention: str = "30 days"  # 保留时长
