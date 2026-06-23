@@ -38,6 +38,14 @@ redis:
   decode_responses: true  # 自动解码响应为 str
   encoding: utf-8  # 字符编码
 
+milvus:
+  enabled: true  # 可经 MILVUS__ENABLED 关闭；不可达时服务降级运行
+  uri: http://milvus:19530  # 生产地址建议经 MILVUS__URI 覆盖
+  db_name: default  # 可经 MILVUS__DB_NAME 覆盖
+  timeout: 10.0
+  batch_size: 1000
+  # token 敏感，绝不写 yaml；通过 MILVUS__TOKEN / K8s Secret 注入
+
 cors:
   # 生产收敛为白名单（安全合规）。allow_origins 真值走环境变量注入：
   # APP__CORS__ALLOW_ORIGINS（JSON 数组格式，如 ["https://app.example.com"]）

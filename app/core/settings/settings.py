@@ -16,6 +16,7 @@
 - ``LoggingSettings`` —— 日志配置（级别/序列化/目录/轮转/保留/压缩/diagnose/enqueue）；
 - ``DBSettings`` —— 数据库配置（连接串/连接池/echo）；
 - ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）；
+- ``MilvusSettings`` —— Milvus 向量库配置（开关/地址/凭证/数据库/超时/批量大小）；
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
 - ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
 - ``SkillSettings`` —— skill 注册中心配置（扫描根目录、总开关、懒加载缓存）。
@@ -90,6 +91,21 @@ class RedisSettings(BaseModel):
     max_connections: int = 20  # 连接池最大连接数
     decode_responses: bool = True  # 是否自动解码响应为 str（存对象时需 JSON 序列化）
     encoding: str = "utf-8"  # 字符编码（decode_responses=True 时生效）
+
+
+class MilvusSettings(BaseModel):
+    """Milvus 向量数据库配置段（对应 yaml 的 ``milvus`` 段）。
+
+    token 属敏感凭证，不写入 yaml，生产真值通过 ``MILVUS__TOKEN`` 环境变量
+    注入。Milvus 是可降级依赖，``enabled=false`` 时应用不会创建客户端。
+    """
+
+    enabled: bool = True  # 是否启用 Milvus 客户端
+    uri: str = "http://localhost:19530"  # Milvus 服务地址
+    token: SecretStr = SecretStr("")  # 认证令牌（敏感，仅环境变量注入）
+    db_name: str = "default"  # 默认数据库名
+    timeout: float = Field(default=10.0, gt=0)  # SDK 操作超时秒数
+    batch_size: int = Field(default=500, gt=0)  # insert/upsert 单批最大实体数
 
 
 class CorsSettings(BaseModel):

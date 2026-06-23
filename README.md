@@ -1,11 +1,12 @@
 # arch-fastapi
 
-> 面向 **AI Agent 应用**的现代 FastAPI 后端脚手架 —— 把真实项目早期最容易散掉的部分提前收拢：启动链、多环境配置、结构化日志、统一响应、全局异常、异步数据层、Redis 缓存、请求追踪、访问日志、**LLM 网关**与**Skill 注册中心**，并提供清晰的业务分层范式。
+> 面向 **AI Agent 应用**的现代 FastAPI 后端脚手架 —— 把真实项目早期最容易散掉的部分提前收拢：启动链、多环境配置、结构化日志、统一响应、全局异常、异步数据层、Redis 缓存、Milvus 向量检索、请求追踪、访问日志、**LLM 网关**与**Skill 注册中心**，并提供清晰的业务分层范式。
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x%20async-D71F00?style=flat-square)
 ![Redis](https://img.shields.io/badge/Redis-asyncio-DC382D?style=flat-square&logo=redis&logoColor=white)
+![Milvus](https://img.shields.io/badge/Milvus-AsyncMilvusClient-00A1EA?style=flat-square)
 ![OpenAI](https://img.shields.io/badge/LLM-OpenAI%20Compatible-111827?style=flat-square)
 ![LangChain](https://img.shields.io/badge/LangChain-ChatModel-1C3C3C?style=flat-square&logo=langchain&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
@@ -54,10 +55,10 @@
 ### 配置与启动
 
 - ✅ **多源配置中心** —— `pydantic-settings + yaml + .env + 环境变量` 多源加载，支持 `dev/test/prod` 多环境，yaml 缺失 fail-fast
-- ✅ **factory 模式启动链** —— `main.py → app/server.py`，集中 `create_app / lifespan / run`，启动期初始化 DB/Redis/LLM/Skill，关闭期逆序释放
+- ✅ **factory 模式启动链** —— `main.py → app/server.py`，集中 `create_app / lifespan / run`，启动期初始化 DB/Redis/Milvus/LLM/Skill，关闭期逆序释放
 - ✅ **统一响应规范** —— `ApiResponse{code, message, data, errno?}`，成功与失败响应形态一致
 - ✅ **全局异常捕获** —— 业务异常 / HTTP 异常 / 参数校验异常 / 未知异常四类统一收口，500 兜底按 `debug` 脱敏
-- ✅ **业务错误码分段** —— HTTP 类 `1+状态码`、业务 `1xxxx`、基础设施层 `2xxxx`（DB 20xxx / LLM 21xxx / Skill 23xxx），全系统 `errno` 统一为 `int`
+- ✅ **业务错误码分段** —— HTTP 类 `1+状态码`、业务 `1xxxx`、基础设施层 `2xxxx`（DB 20xxx / LLM 21xxx / Skill 23xxx / Milvus 24xxx），全系统 `errno` 统一为 `int`
 
 ### 可观测性与中间件
 
@@ -71,6 +72,7 @@
 
 - ✅ **SQLAlchemy 2.0 异步数据层** —— async engine + `async_sessionmaker`，启动期 `SELECT 1` 连通性预检 fail-fast，`get_db()` 依赖注入
 - ✅ **Redis 异步缓存层** —— `redis.asyncio` 单例连接池，非核心依赖（连不上降级运行不阻断启动），cache-aside 封装 + JSON 序列化 + TTL
+- ✅ **Milvus 异步向量库访问层** —— `AsyncMilvusClient` 单例与启动探测，collection 管理、批量 insert/upsert、delete/get/query/search，检索结果归一，失败可降级
 - ✅ **业务分层范式** —— 已提供 `user` 模块 `api → schemas → services → repositories/{models,dao}` 全链路案例
 
 ### AI 能力
@@ -81,7 +83,7 @@
 
 ### 工程规范
 
-- ✅ **健康探针** —— `/livez` 存活探针（只看进程）、`/readyz` 就绪探针（检查 DB/Redis），K8s / 容器友好
+- ✅ **健康探针** —— `/livez` 只看进程、`/readyz` 并发检查 DB/Redis/Milvus；可选依赖失败标 degraded，K8s / 容器友好
 - ✅ **分层依赖单向** —— `api → services → {agents/rag/skills/...} → repositories`，禁止反向依赖
 - ✅ **LLM 访问收敛** —— 所有模型调用经 `core/llm/`，业务层不直接依赖厂商 SDK
 
@@ -108,9 +110,9 @@ services/             Service：业务编排
   └──► mcp/            # MCP Client / Server 管理预留
   │
   ▼
-repositories/         DAO：PostgreSQL / Redis（✅）/ Milvus / ES 访问封装
+repositories/         DAO：PostgreSQL / Milvus（✅）/ ES 访问封装
 
-core/                 配置、日志、数据库、Redis、LLM、Skill 等横向基础能力
+core/                 配置、日志、数据库、Redis、Milvus、LLM、Skill 等横向基础能力
 middleware/           CORS、RequestID、AccessLog（✅），后续可扩 JWT / 限流
 tasks/                Celery / Arq / 定时任务预留
 ```
@@ -239,6 +241,7 @@ APP_ENV=dev conda run -n arch-fatapi uvicorn "app.server:create_app" --factory -
 
 - **SQLAlchemy**：进程级 async engine 单例 + `async_sessionmaker`，启动期 `SELECT 1` 预检，连不上 `raise BizException(DB_CONNECT_FAILED)` 拒启动（核心依赖 fail-fast）
 - **Redis**：进程级单例连接池，构建/ping 失败 warning + 降级运行（非核心依赖），`get_redis_optional()` 供探针区分在线/降级
+- **Milvus**：进程级 `AsyncMilvusClient`，启动只读探测失败时降级；`VectorRepository` 提供 collection 管理、分批写入、标量查询与向量检索，token 只经环境变量注入
 
 ---
 
@@ -350,7 +353,7 @@ APP_ENV=dev conda run -n arch-fatapi python -c "from app.core.config import get_
 健康探针：
 
 - `/livez`：存活探针，只看进程不碰依赖
-- `/readyz`：就绪探针，检查 DB / Redis（Redis 不可用判为 degraded 而非失败）
+- `/readyz`：并发检查 DB / Redis / Milvus（Redis/Milvus 不可用判为 degraded，DB 不可用返回 503）
 
 ---
 
@@ -414,7 +417,7 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 - ✅ SQLAlchemy 2.0 异步数据层
 - ✅ Redis 异步缓存层
 - ✅ user 业务分层案例
-- ☐ Milvus 向量库访问封装
+- ✅ Milvus 向量库访问封装
 - ☐ Elasticsearch 访问封装
 
 **AI 能力**

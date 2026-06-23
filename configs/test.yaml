@@ -31,6 +31,14 @@ redis:
   decode_responses: true  # 自动解码响应为 str
   encoding: utf-8  # 字符编码
 
+milvus:
+  enabled: false  # 单元测试默认不连接真实 Milvus，测试通过 mock 客户端覆盖
+  uri: http://localhost:19530
+  db_name: default
+  timeout: 2.0
+  batch_size: 64
+  # token 敏感，不写 yaml；通过 MILVUS__TOKEN 环境变量注入
+
 cors:
   allow_origins: ["*"]  # test 全放行，CI/联调友好
   allow_methods: ["*"]  # 全方法

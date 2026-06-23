@@ -2,7 +2,7 @@
 
 本模块集中承载应用启动相关逻辑：
 - ``create_app``：创建 FastAPI 实例并注册路由、异常处理器和中间件；
-- ``lifespan``：启动期加载配置并初始化 DB/Redis，关闭期释放资源；
+- ``lifespan``：启动期加载配置并初始化 DB/Redis/Milvus/LLM/Skills，关闭期逆序释放资源；
 - ``run``：把 ``AppSettings`` 翻译为 uvicorn 启动参数。
 
 ``main.py`` 只负责导出 ``create_app`` 与触发 ``run``，启动阅读路径保持为
@@ -93,6 +93,11 @@ async def lifespan(app: FastAPI):
         from app.core.redis import init_redis
         await init_redis(settings.redis)
 
+        # Milvus 是可降级依赖：启动期只做只读探测，失败不阻断应用启动。
+        from app.core.milvus import init_milvus
+
+        await init_milvus(settings.milvus)
+
         # LLM 网关初始化（在 DB/Redis 之后）：构造全部 Provider 单例。
         # 不对云端做 ping 预检——LLM 调用是付费网络调用，连通性由首次真实
         # 调用暴露（失败转 BizException），与 DB「启动期预检 fail-fast」对照。
@@ -110,17 +115,19 @@ async def lifespan(app: FastAPI):
     finally:
         from app.core.redis import close_redis
         from app.core.database import dispose_db
+        from app.core.milvus import close_milvus
         from app.utils.http_client import close_client
         from app.core.llm.gateway import close_llm
         from app.core.skills.registry import close_skills
 
         await _cleanup_resources(
             [
-                ("redis", close_redis),
-                ("database", dispose_db),
-                ("http_client", close_client),
-                ("llm", close_llm),
                 ("skills", close_skills),
+                ("llm", close_llm),
+                ("milvus", close_milvus),
+                ("http_client", close_client),
+                ("database", dispose_db),
+                ("redis", close_redis),
             ]
         )
 

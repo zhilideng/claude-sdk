@@ -20,6 +20,9 @@ asyncpg>=0.29
 redis>=5.0  # 异步 Redis 客户端
 fakeredis>=2.23  # Redis 测试用 FakeRedis（已预装）
 
+# 向量数据库依赖
+pymilvus>=2.5,<3.0  # Milvus 异步客户端（AsyncMilvusClient）
+
 # LLM 网关层依赖
 # 多 Provider（OpenAI/DeepSeek/Qwen/Claude/智谱等）统一走 OpenAI 兼容端点，
 # 靠 base_url + api_key 切换厂商，共用同一套 openai SDK 调用代码。

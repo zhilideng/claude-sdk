@@ -32,6 +32,14 @@ redis:
   decode_responses: true  # 自动解码响应为 str
   encoding: utf-8  # 字符编码
 
+milvus:
+  enabled: true  # 开发环境启用；不可达时自动降级，不阻断应用启动
+  uri: http://localhost:19530  # 本地 Milvus 地址
+  db_name: default  # 目标数据库
+  timeout: 10.0  # SDK 操作超时秒数
+  batch_size: 256  # insert/upsert 单批实体数
+  # token 敏感，不写 yaml；通过 MILVUS__TOKEN 环境变量注入
+
 cors:
   allow_origins: ["*"]  # dev 全放行，开发友好
   allow_methods: ["*"]  # 全方法

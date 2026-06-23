@@ -27,6 +27,7 @@ from app.core.settings import (
     DBSettings,
     LlmSettings,
     LoggingSettings,
+    MilvusSettings,
     RedisSettings,
     SkillSettings,
 )
@@ -88,6 +89,7 @@ class Settings(BaseSettings):
     logging: LoggingSettings = LoggingSettings()  # 日志配置段（驱动 logger.py）
     db: DBSettings = DBSettings()  # 数据库配置段（驱动 database.py）
     redis: RedisSettings = RedisSettings()  # Redis 缓存配置段（驱动 redis.py）
+    milvus: MilvusSettings = MilvusSettings()  # Milvus 向量库配置段（驱动 milvus.py）
     cors: CorsSettings = CorsSettings()  # 跨域配置段（驱动 cors.py）
     llm: LlmSettings = LlmSettings()  # LLM 网关配置段（驱动 core/llm/）
     skills: SkillSettings = SkillSettings()  # skill 注册中心配置段（驱动 core/skills/）

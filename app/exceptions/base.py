@@ -99,3 +99,9 @@ SKILL_ERRNO_NOT_FOUND = 23002  # 请求的 skill 名不在注册索引中
 SKILL_ERRNO_LOAD_FAILED = 23003  # SKILL.md 加载或解析失败
 SKILL_ERRNO_DISABLED = 23004  # skill 存在但 enabled=false
 SKILL_ERRNO_RUN_FAILED = 23005  # skill 执行失败（LLM 调用失败等）
+
+# ── Milvus 错误码（2xxxx 段的 24xxx 子段：向量数据库层）──────────────
+MILVUS_ERRNO_NOT_INITIALIZED = 24001  # 客户端未初始化或已降级
+MILVUS_ERRNO_CONNECT_FAILED = 24002  # 客户端构造或启动连通性探测失败
+MILVUS_ERRNO_OPERATION_FAILED = 24003  # collection / 数据操作失败
+MILVUS_ERRNO_INVALID_RESPONSE = 24004  # SDK 返回结构缺失必需字段

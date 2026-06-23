@@ -16,6 +16,7 @@
 - ``LoggingSettings`` —— 日志配置（级别/序列化/目录/轮转/保留/压缩/diagnose/enqueue）；
 - ``DBSettings`` —— 数据库配置（连接串/连接池/echo）；
 - ``RedisSettings`` —— Redis 缓存配置（url/db/max_connections/decode_responses/encoding）；
+- ``MilvusSettings`` —— Milvus 向量库配置（开关/地址/凭证/数据库/超时/批量大小）；
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
 - ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（各 Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
 - ``LangSmithConfig`` —— LangSmith 追踪配置（挂 ``LlmSettings.langsmith``；enabled 默认 false 零上报，api_key 走 ``LANGCHAIN_API_KEY`` 环境变量）。
@@ -33,6 +34,7 @@ from app.core.settings.settings import (
     LlmProviderConfig,
     LlmSettings,
     LoggingSettings,
+    MilvusSettings,
     RedisSettings,
     SkillSettings,
 )
@@ -42,6 +44,7 @@ __all__ = [
     "LoggingSettings",
     "DBSettings",
     "RedisSettings",
+    "MilvusSettings",
     "CorsSettings",
     "LlmProviderConfig",
     "LlmSettings",
