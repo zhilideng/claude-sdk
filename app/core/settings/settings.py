@@ -24,7 +24,9 @@
 注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
 CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
 """
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 class AppSettings(BaseModel):
@@ -226,3 +228,59 @@ class SkillSettings(BaseModel):
     enabled: bool = True  # 总开关；false 时注册中心空运行
     base_dir: str = "app/skills"  # skill 内容根目录（相对项目根）
     cache_loaded: bool = True  # 是否缓存懒加载的 SkillBundle
+
+
+class McpRemoteServerSettings(BaseModel):
+    """单个远端 MCP Server 的静态连接配置。"""
+
+    enabled: bool = True
+    url: str = "http://127.0.0.1:8010/mcp"
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        """只允许标准 HTTP 传输 URL，拒绝任意协议。"""
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("MCP Server URL 必须是有效的 http/https URL")
+        return value
+
+
+class McpClientSettings(BaseModel):
+    """MCP Client Manager 配置。"""
+
+    enabled: bool = True
+    default_server: str = "demo"
+    connect_timeout: float = Field(default=5.0, gt=0)
+    call_timeout: float = Field(default=30.0, gt=0)
+    max_concurrency: int = Field(default=20, gt=0)
+    servers: dict[str, McpRemoteServerSettings] = Field(
+        default_factory=lambda: {"demo": McpRemoteServerSettings()}
+    )
+
+
+class McpServerSettings(BaseModel):
+    """独立 Streamable HTTP MCP Server 配置。"""
+
+    enabled: bool = True
+    name: str = "arch-fastapi-mcp"
+    host: str = "127.0.0.1"
+    port: int = Field(default=8010, ge=1, le=65535)
+    path: str = "/mcp"
+    stateless_http: bool = True
+    json_response: bool = True
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        """MCP 路径必须是绝对路径。"""
+        if not value.startswith("/"):
+            raise ValueError("MCP Server path 必须以 '/' 开头")
+        return value
+
+
+class McpSettings(BaseModel):
+    """MCP Client 与独立 Server 的根配置段。"""
+
+    client: McpClientSettings = Field(default_factory=McpClientSettings)
+    server: McpServerSettings = Field(default_factory=McpServerSettings)

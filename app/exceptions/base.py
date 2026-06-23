@@ -107,3 +107,11 @@ MILVUS_ERRNO_NOT_INITIALIZED = 24001  # 客户端未初始化或已降级
 MILVUS_ERRNO_CONNECT_FAILED = 24002  # 客户端构造或启动连通性探测失败
 MILVUS_ERRNO_OPERATION_FAILED = 24003  # collection / 数据操作失败
 MILVUS_ERRNO_INVALID_RESPONSE = 24004  # SDK 返回结构缺失必需字段
+
+# ── MCP 错误码（2xxxx 段的 25xxx 子段：MCP Client / Server）────────────
+MCP_ERRNO_NOT_INITIALIZED = 25001  # Client Manager 未初始化或已关闭
+MCP_ERRNO_SERVER_NOT_FOUND = 25002  # 请求的 Server 未配置或未启用
+MCP_ERRNO_CONNECT_FAILED = 25003  # Streamable HTTP 连接或初始化失败
+MCP_ERRNO_CALL_FAILED = 25004  # MCP 协议操作或工具调用失败
+MCP_ERRNO_INVALID_RESPONSE = 25005  # MCP Server 返回结构不符合契约
+MCP_ERRNO_CONFIG_INVALID = 25006  # 运行环境下的 MCP 安全配置非法

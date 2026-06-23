@@ -62,6 +62,26 @@ skills:
   base_dir: app/skills  # skill 内容根目录（相对项目根；生产可经 SKILLS__BASE_DIR 挂载覆盖）
   cache_loaded: true  # 是否缓存懒加载的 SkillBundle
 
+mcp:
+  client:
+    enabled: true
+    default_server: demo
+    connect_timeout: 5.0
+    call_timeout: 30.0
+    max_concurrency: 100
+    servers:
+      demo:
+        enabled: true
+        url: https://mcp.example.com/mcp
+  server:
+    enabled: false  # 当前版本无认证能力，生产默认禁止启动匿名 MCP Server
+    name: arch-fastapi-mcp
+    host: 127.0.0.1
+    port: 8010
+    path: /mcp
+    stateless_http: true
+    json_response: true
+
 llm:
   default_provider: openai  # 默认 Provider（get_provider 未指定名字时回退）
   # Provider 统一走 OpenAI 兼容端点，靠 base_url + api_key 切换厂商。

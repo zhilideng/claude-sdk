@@ -52,6 +52,22 @@ skills:
   base_dir: app/skills  # skill 内容根目录（相对项目根）
   cache_loaded: true  # 是否缓存懒加载的 SkillBundle
 
+mcp:
+  client:
+    enabled: false
+    default_server: demo
+    servers:
+      demo:
+        enabled: false
+        url: http://127.0.0.1:8010/mcp
+  server:
+    enabled: true
+    host: 127.0.0.1
+    port: 8010
+    path: /mcp
+    stateless_http: true
+    json_response: true
+
 llm:
   default_provider: openai  # 默认 Provider（get_provider 未指定名字时回退）
   # Provider 统一走 OpenAI 兼容端点，靠 base_url + api_key 切换厂商。

@@ -105,7 +105,7 @@ api/                  Controller：路由、参数校验、统一响应
 services/             Service：业务编排
   │
   ├──► skills/         # ✅ 业务技能与专家经验（Skill 注册中心）
-  └──► mcp/            # MCP Client / Server 管理预留
+  └──► mcp/            # ✅ 独立 MCP Server + 配置驱动 Client Manager
   │
   ▼
 repositories/         DAO：PostgreSQL / Milvus（✅）/ ES 访问封装
@@ -140,7 +140,7 @@ arch-fastapi/
 │   ├── middleware/          # cors / request_id / access_log
 │   ├── utils/               # http_client、cache、通用响应
 │   ├── exceptions/          # BizException 家族 + 全局 handler + 错误码常量
-│   ├── mcp/                 # MCP 能力预留
+│   ├── mcp/                 # ✅ Streamable HTTP Client / Server、工具与生命周期
 │   ├── skills/              # ✅ Skill 数据资产（<name>/SKILL.md）
 │   ├── tasks/               # 异步任务预留
 │   └── server.py            # FastAPI 应用组装与运行
@@ -297,6 +297,32 @@ POST /v1/skills/{name}/run # 执行（body 传用户输入）
 
 ---
 
+### MCP Client / Server
+
+MCP 采用“同仓库、独立进程、独立端口”部署：现有 FastAPI 仅在 lifespan 中注册
+MCP Client，不探测远端；MCP Server 由独立入口启动，不挂载到 FastAPI `/mcp`。
+
+```text
+FastAPI / Workflow ──MCP Client──► Streamable HTTP MCP Server
+       :8003                              :8010/mcp
+```
+
+安装依赖后分别启动 Server 与 demo Client：
+
+```bash
+conda run -n arch-fatapi python -m app.mcp.server
+conda run -n arch-fatapi python -m examples.mcp_client_demo
+```
+
+demo 会发现 `calculate` 工具并调用 `12 / 3`，返回结构化结果。业务代码可通过
+`get_mcp_client(name)` 获取静态配置的 Server；目标 URL 不接受请求期动态传入，
+工具调用默认不重试，避免有副作用的操作被重复执行。
+
+当前版本暂不提供 MCP 认证：Client 不发送认证头，Server 只允许监听 loopback，
+`configs/prod.yaml` 默认设置 `mcp.server.enabled=false`，避免匿名服务被意外暴露。
+生产 Client 的远端 URL 仍强制 HTTPS。未来确有认证需求时再作为独立特性实现，
+当前代码不保留任何认证占位。
+
 ## 业务开发范式
 
 新增业务模块按 `user` 示例扩展，一表对应五件套：
@@ -430,7 +456,7 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 - ☐ LLM fallback 降级 / pricing 计费
 - ✅ Embedding 文本向量化
 - ✅ 图文多模态（URL / Base64）
-- ☐ MCP Client / Server
+- ✅ MCP Client / Server（独立 Streamable HTTP、结构化 demo；暂不认证）
 
 **任务与运维**
 

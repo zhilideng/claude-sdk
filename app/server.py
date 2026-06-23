@@ -111,6 +111,12 @@ async def lifespan(app: FastAPI):
 
         init_skills(settings.skills)
 
+        # MCP Client Manager 只注册静态远端，不在启动期发起网络连接。
+        # 独立 MCP Server 由 ``python -m app.mcp.server`` 单独启动。
+        from app.mcp.manager import init_mcp_clients
+
+        init_mcp_clients(settings.mcp.client, environment=settings.app.env)
+
         yield
     finally:
         from app.core.redis import close_redis
@@ -119,9 +125,11 @@ async def lifespan(app: FastAPI):
         from app.utils.http_client import close_client
         from app.core.llm.gateway import close_llm
         from app.core.skills.registry import close_skills
+        from app.mcp.manager import close_mcp_clients
 
         await _cleanup_resources(
             [
+                ("mcp_clients", close_mcp_clients),
                 ("skills", close_skills),
                 ("llm", close_llm),
                 ("milvus", close_milvus),

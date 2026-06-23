@@ -27,6 +27,7 @@ from app.core.settings import (
     DBSettings,
     LlmSettings,
     LoggingSettings,
+    McpSettings,
     MilvusSettings,
     RedisSettings,
     SkillSettings,
@@ -93,6 +94,7 @@ class Settings(BaseSettings):
     cors: CorsSettings = CorsSettings()  # 跨域配置段（驱动 cors.py）
     llm: LlmSettings = LlmSettings()  # LLM 网关配置段（驱动 core/llm/）
     skills: SkillSettings = SkillSettings()  # skill 注册中心配置段（驱动 core/skills/）
+    mcp: McpSettings = McpSettings()  # MCP Client 与独立 Server 配置段
 
     @classmethod
     def settings_customise_sources(
