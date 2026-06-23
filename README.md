@@ -40,7 +40,7 @@
 
 适合用来启动这些项目：
 
-- 🤖 AI Agent / RAG / Workflow 后端服务
+- 🤖 AI Agent 与大模型应用后端服务
 - 🔌 多模型供应商统一接入网关
 - 🧱 需要标准分层的 FastAPI 业务系统
 - 🏢 内部平台、原型产品、SaaS API 服务
@@ -86,7 +86,7 @@
 ### 工程规范
 
 - ✅ **健康探针** —— `/livez` 只看进程、`/readyz` 并发检查 DB/Redis/Milvus；可选依赖失败标 degraded，K8s / 容器友好
-- ✅ **分层依赖单向** —— `api → services → {agents/rag/skills/...} → repositories`，禁止反向依赖
+- ✅ **分层依赖单向** —— `api → services → core/repositories`，禁止反向依赖
 - ✅ **LLM 访问收敛** —— 所有模型调用经 `core/llm/`，业务层不直接依赖厂商 SDK
 
 ---
@@ -104,11 +104,7 @@ api/                  Controller：路由、参数校验、统一响应
   ▼
 services/             Service：业务编排
   │
-  ├──► agents/         # Agent 能力预留
-  ├──► workflows/      # LangGraph / 状态机 / 多 Agent 协作预留
   ├──► skills/         # ✅ 业务技能与专家经验（Skill 注册中心）
-  ├──► rag/            # 检索、召回、重排、知识库管理预留
-  ├──► memory/         # 对话记忆、用户画像、Checkpoint 预留
   └──► mcp/            # MCP Client / Server 管理预留
   │
   ▼
@@ -144,10 +140,6 @@ arch-fastapi/
 │   ├── middleware/          # cors / request_id / access_log
 │   ├── utils/               # http_client、cache、通用响应
 │   ├── exceptions/          # BizException 家族 + 全局 handler + 错误码常量
-│   ├── agents/              # Agent 能力预留
-│   ├── workflows/           # 工作流能力预留
-│   ├── rag/                 # RAG 能力预留
-│   ├── memory/              # 记忆能力预留
 │   ├── mcp/                 # MCP 能力预留
 │   ├── skills/              # ✅ Skill 数据资产（<name>/SKILL.md）
 │   ├── tasks/               # 异步任务预留
@@ -438,10 +430,6 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 - ☐ LLM fallback 降级 / pricing 计费
 - ✅ Embedding 文本向量化
 - ✅ 图文多模态（URL / Base64）
-- ☐ Prompt 模板与版本管理
-- ☐ RAG 检索链路
-- ☐ Agent / Workflow 编排
-- ☐ Memory 对话记忆
 - ☐ MCP Client / Server
 
 **任务与运维**
@@ -457,7 +445,7 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 - **错误收口** —— API 响应稳定，异常链路可观测
 - **基础设施集中** —— 日志、DB、Redis、HTTP、LLM 都有统一入口
 - **分层清晰** —— Controller、Service、DAO、Model 各司其职
-- **AI 友好** —— 为 Agent、RAG、Workflow、MCP、Memory 预留演进空间
+- **AI 友好** —— 提供 LLM、Embedding、向量检索与 Skill 等可复用基础能力
 
 ---
 
