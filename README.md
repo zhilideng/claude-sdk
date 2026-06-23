@@ -409,7 +409,6 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 - ✅ CORS（配置驱动）
 - ✅ 全局异步 HTTP client（重试/超时/连接池）
 - ✅ 健康探针（livez / readyz）
-- ☐ JWT 认证
 - ☐ 限流（Rate Limit）
 
 **数据层**
@@ -418,7 +417,6 @@ APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWor
 - ✅ Redis 异步缓存层
 - ✅ user 业务分层案例
 - ✅ Milvus 向量库访问封装
-- ☐ Elasticsearch 访问封装
 
 **AI 能力**
 
