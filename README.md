@@ -158,18 +158,18 @@ arch-fastapi/
 
 ## 快速开始
 
-项目默认使用 Conda 环境 `arch-fatapi`（Python 3.11）。
+项目默认使用 Conda 环境 `claude-sdk`（Python 3.11）。
 
 ```bash
 # 1. 创建环境并安装依赖
-conda create -n arch-fatapi python=3.11 -y
-conda run -n arch-fatapi pip install -r requirements.txt
+conda create -n claude-sdk python=3.11 -y
+conda run -n claude-sdk pip install -r requirements.txt
 
 # 2. 启动开发服务（dev 自动 reload）
-APP_ENV=dev conda run -n arch-fatapi python main.py
+APP_ENV=dev conda run -n claude-sdk python main.py
 
 # 或使用 uvicorn factory 模式
-APP_ENV=dev conda run -n arch-fatapi uvicorn "app.server:create_app" --factory --reload
+APP_ENV=dev conda run -n claude-sdk uvicorn "app.server:create_app" --factory --reload
 ```
 
 默认开发端口见 `configs/dev.yaml`（当前为 `8003`）。启动后访问：
@@ -310,8 +310,8 @@ FastAPI / Workflow ──MCP Client──► Streamable HTTP MCP Server
 安装依赖后分别启动 Server 与 demo Client：
 
 ```bash
-conda run -n arch-fatapi python -m app.mcp.server
-conda run -n arch-fatapi python -m examples.mcp_client_demo
+conda run -n claude-sdk python -m app.mcp.server
+conda run -n claude-sdk python -m examples.mcp_client_demo
 ```
 
 demo 会发现 `calculate` 工具并调用 `12 / 3`，返回结构化结果。业务代码可通过
@@ -367,7 +367,7 @@ app/repositories/dao/<biz>.py       # Repository / DAO
 查看生效配置：
 
 ```bash
-APP_ENV=dev conda run -n arch-fatapi python -c "from app.core.config import get_settings; print(get_settings().app.model_dump())"
+APP_ENV=dev conda run -n claude-sdk python -c "from app.core.config import get_settings; print(get_settings().app.model_dump())"
 ```
 
 ---
@@ -391,10 +391,10 @@ APP_ENV=dev conda run -n arch-fatapi python -c "from app.core.config import get_
 
 ```bash
 # 运行全部测试（须用 python -m，bin/pytest 入口找不到 app 包）
-conda run -n arch-fatapi python -m pytest tests/ -v
+conda run -n claude-sdk python -m pytest tests/ -v
 
 # 仅验证应用能否构建
-APP_ENV=test conda run -n arch-fatapi python -c \
+APP_ENV=test conda run -n claude-sdk python -c \
   "from app.server import create_app; app = create_app(enable_lifespan=False); print(app.title)"
 ```
 
@@ -406,7 +406,7 @@ APP_ENV=test conda run -n arch-fatapi python -c \
 
 ```bash
 # 方式一：直接用 main.py（调优参数已在 prod.yaml 配好）
-APP_ENV=prod conda run -n arch-fatapi python main.py
+APP_ENV=prod conda run -n claude-sdk python main.py
 
 # 方式二：gunicorn + UvicornWorker（容器化推荐，滚动更新更成熟）
 APP_ENV=prod gunicorn "app.server:create_app" -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --factory

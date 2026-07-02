@@ -23,7 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **文档约定**：代码注释一律中文（命名仍英文，见「关键实现约定」）。
 - **Hook**：`.claude/` 下 Stop hook——`app/` / `main.py` / `tests/*.py` 有改动但 `CLAUDE.md` 未同步时，强制阻止回合结束（详见 `.claude/hooks/sync_claude_md.sh`）。
 
-**开发环境为 Conda 环境 `arch-fatapi`（Python 3.11.15）**，具体命令见下文「开发命令」。
+**开发环境为 Conda 环境 `claude-sdk`（Python 3.11.15）**，具体命令见下文「开发命令」。
 
 **下一步**：横向支撑层与数据层待补——`middleware/`（CORS/RequestID/AccessLog 已完成（CORS 已改配置驱动——dev/test 全放行 / prod 白名单；RequestID 仍写死）；剩 JWT / 限流）、`core/llm/`（**已实现**：openai SDK 统一接入 4 家 Provider，chat/stream/tool_calling/usage；待补 fallback 降级 / pricing 计费 / embedding / 多模态 / anthropic SDK 双轨升级）、`repositories/`（**PostgreSQL 访问封装已起步并分层**：`models/`（ORM 实体）+ `dao/`（Repository）并列、`base.py`（Base 声明基类）居顶层；user 表四层案例已通，新增业务表按「models/<entity>.py + dao/<entity>.py + schemas/<entity>.py + services/<entity>_service.py + api/v1/<entity>s.py」范式扩；Redis 缓存归 `utils/cache.py`；Milvus / ES 访问封装待补）、`tasks/`（Celery / Arq 异步任务）。新增注册点集中在 `app/server.py`，配置统一经 `core/config.py` 读取。
 
@@ -73,12 +73,12 @@ api/        Controller 层：FastAPI 路由、参数校验、结果返回
 
 ## 开发命令
 
-**开发环境**：项目使用 Conda 虚拟环境 **`arch-fatapi`**（环境名如此，确实少一个 `t`，不是笔误；Python 3.11.15）。所有命令须在此环境内执行；旧的 `.venv` 已弃用、可删除。
+**开发环境**：项目使用 Conda 虚拟环境 **`claude-sdk`**（Python 3.11.15）。所有命令须在此环境内执行；旧的 `.venv` 已弃用、可删除。
 
 ```bash
-conda run -n arch-fatapi pip install -r requirements.txt   # 安装依赖
-conda run -n arch-fatapi python -m pytest tests/ -v        # 运行测试（须用 python -m，bin/pytest 入口找不到 app 包）
-APP_ENV=dev conda run -n arch-fatapi python -c "from app.core.config import get_settings; print(get_settings().app.model_dump())"  # 查看生效配置
+conda run -n claude-sdk pip install -r requirements.txt   # 安装依赖
+conda run -n claude-sdk python -m pytest tests/ -v        # 运行测试（须用 python -m，bin/pytest 入口找不到 app 包）
+APP_ENV=dev conda run -n claude-sdk python -c "from app.core.config import get_settings; print(get_settings().app.model_dump())"  # 查看生效配置
 ```
 
 环境切换：`APP_ENV={dev,test,prod}` 选 yaml；configs 目录覆盖：环境变量 `APP_CONFIG_DIR`（默认 `<项目根>/configs`，容器/生产挂载到 `/etc/<app>` 等位置时设置）；敏感项覆盖：环境变量 `APP__<FIELD>` 或 `.env`（优先级 env > .env > yaml > 默认）。开发启动：`python main.py`（factory 模式，dev 自动 reload）或 `uvicorn "app.server:create_app" --factory --reload`。

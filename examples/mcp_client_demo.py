@@ -1,10 +1,10 @@
 """独立 Streamable HTTP MCP Server 调用示例。
 
 先运行：
-    conda run -n arch-fatapi python -m app.mcp.server
+    conda run -n claude-sdk python -m app.mcp.server
 
 再运行本文件：
-    conda run -n arch-fatapi python -m examples.mcp_client_demo
+    conda run -n claude-sdk python -m examples.mcp_client_demo
 """
 
 import asyncio
