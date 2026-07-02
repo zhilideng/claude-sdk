@@ -11,6 +11,13 @@ venv/
 .idea/
 .vscode/
 
+# Frontend
+.pnpm-store/
+web/node_modules/
+web/dist/
+web/.env
+web/*.tsbuildinfo
+
 # pytest
 .pytest_cache/
 

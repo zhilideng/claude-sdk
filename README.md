@@ -9,6 +9,7 @@
 ![Milvus](https://img.shields.io/badge/Milvus-AsyncMilvusClient-00A1EA?style=flat-square)
 ![OpenAI](https://img.shields.io/badge/LLM-OpenAI%20Compatible-111827?style=flat-square)
 ![LangChain](https://img.shields.io/badge/LangChain-ChatModel-1C3C3C?style=flat-square&logo=langchain&logoColor=white)
+![React](https://img.shields.io/badge/Web-React%20%2B%20TypeScript-61DAFB?style=flat-square&logo=react&logoColor=111827)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 
 ---
@@ -148,6 +149,7 @@ arch-fastapi/
 │   ├── dev.yaml
 │   ├── test.yaml
 │   └── prod.yaml
+├── web/                     # React + TypeScript 前端空壳工程（暂不含业务代码）
 ├── main.py                  # 入口：导出 create_app，直接执行时 run
 ├── requirements.txt
 ├── LICENSE
@@ -170,6 +172,14 @@ APP_ENV=dev conda run -n claude-sdk python main.py
 
 # 或使用 uvicorn factory 模式
 APP_ENV=dev conda run -n claude-sdk uvicorn "app.server:create_app" --factory --reload
+```
+
+前端空壳工程位于 `web/`，仅保留 React + TypeScript + Vite 基础结构，不包含业务页面或接口封装：
+
+```bash
+cd web
+pnpm install
+pnpm run dev
 ```
 
 默认开发端口见 `configs/dev.yaml`（当前为 `8003`）。启动后访问：
