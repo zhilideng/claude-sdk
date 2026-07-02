@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **2026-06-23 补充（MCP Client / Server 已实现，当前暂不认证）**：`app/mcp/` 采用“同仓库、独立入口、独立进程、独立端口”边界。`server.py` 通过 `conda run -n claude-sdk python -m app.mcp.server` 启动无状态 Streamable HTTP Server（dev 默认 `127.0.0.1:8010/mcp`），不挂载现有 FastAPI；无认证 Server 只允许绑定 loopback，prod 默认 `mcp.server.enabled=false`。`client.py` 每次操作建立短生命周期 `ClientSession`，支持 `list_tools/call_tool/ping`、连接/调用超时和进程级并发限制，工具调用不自动重试；Client 不生成认证头。`manager.py` 启动期只注册静态 Server、不联网，单个无效配置降级跳过，已接入 FastAPI lifespan 并最先关闭。当前已完整删除 MCP 认证实现、配置和占位，未来需要时作为独立特性重新设计。`tools/demo.py::calculate` 为结构化四则运算 demo，不使用 eval；调用示例为 `conda run -n claude-sdk python -m examples.mcp_client_demo`。MCP 配置挂 `Settings.mcp`，三套 yaml 已同步；官方 SDK 锁定 `mcp>=1.27,<2`（v2 当前仍为 alpha）；错误码使用 25xxx（25001-25006），避免与 Skill 23xxx / Milvus 24xxx 冲突。MCP 本地测试 **29 passed**；全量排除既有 `test_api_response.py` collection error 后为 **251 passed / 4 failed**，4 个失败与实现前基线一致（AccessLog 1、旧配置断言 2、LLM mock 1）；`compileall`、`pip check`、`git diff --check` 通过。
 
+**2026-07-02 补充（前端空壳工程已创建）**：`web/` 是同仓库内独立的 React + TypeScript + Vite 前端空壳工程，只保留基础工程结构、入口组件、全局样式 token 和 `.env.example`，**暂不包含业务页面、接口封装或后端 API 调用**。前端开发命令在 `web/` 内执行：`pnpm install`、`pnpm run dev`、`pnpm run build`；开发端口默认 `127.0.0.1:5173`，后端地址通过 `VITE_API_BASE_URL` 指定。前端样式必须继续遵循 `docs/front.md` 的 CSS 变量，不在组件内硬编码颜色和圆角。`web/node_modules/`、`web/dist/`、`web/.env` 已加入 `.gitignore`。
+
 ## 项目当前状态（务必先读）
 
 **2026-06-23 补充（Embedding + 图文多模态已实现）**：`app/core/llm/` 新增 `models.py`（厂商无关 `LLMUsage` / `ImageInput` / `EmbeddingResponse` / `MultimodalResponse`）、`embedding.py`（`embed()` 批量文本向量化）与 `multimodal.py`（`analyze_images()` URL/Base64 多图理解）；两项能力复用 `gateway.py` 启动期缓存的 `AsyncOpenAI` 和 `provider_configs`，请求期不新建客户端。`LlmProviderConfig` 新增可选 `embedding_model` / `multimodal_model`，为空即未声明能力；三套 yaml 的 OpenAI 默认配置 `text-embedding-3-small` / `gpt-4o-mini`。Embedding 支持单批最多 2048 条、批量顺序恢复、模型覆盖、可选 dimensions、usage 归一化；图文支持最多 10 张 HTTPS URL 或 Base64 Data URL、`auto/low/high` detail，单图解码后最大 10 MiB，校验 JPEG/PNG/WEBP/GIF 魔数且拒绝动画 GIF，服务端不下载远程图片。新增错误码 `LLM_ERRNO_CAPABILITY_NOT_CONFIGURED=21005`、`LLM_ERRNO_INVALID_INPUT=21006`，厂商调用/响应异常继续用 21003/21004；验证接口为 `POST /v1/llm/embeddings/test`、`POST /v1/llm/multimodal/test`。本地新增 42 个 Mock 测试覆盖公共契约、启动期配置缓存、调用、输入安全与 API，不连真实云端。
@@ -79,6 +81,8 @@ api/        Controller 层：FastAPI 路由、参数校验、结果返回
 - **配置驱动**：按环境区分，配置文件放 `configs/`，由 `core/config.py` 统一加载。
 - **分层依赖单向**：`api → services → {agents/rag/skills/workflows/memory/mcp} → repositories`，跨层调用禁止逆向。
 - **LLM 访问收敛**：所有模型调用经 `core/llm/`，便于切换厂商与统一计费/限流。
+- **前端开发参考 `docs/front.md`**：涉及前端开发（页面、组件、样式）时，一律参考并遵循 `docs/front.md` 的规范，包括其中定义的样式 token（CSS 变量：配色 / 圆角 / 间距等）与视觉约定，不自行硬编码颜色、圆角等样式值。
+- **前端工程边界**：`web/` 是独立 React + TypeScript + Vite 子项目，当前只承载空壳工程；新增业务页面、API client、状态管理前需先明确产品边界，不把前端代码放入 `app/`，也不让 FastAPI 生命周期依赖前端构建产物。
 - **代码注释用中文**：所有新增代码的注释一律使用中文，包括模块 / 类 / 函数的 docstring 与行内说明；变量、函数、类等命名仍遵循 PEP 8 用英文。
 - **Git 提交信息用中文**：所有 commit 的标题与正文一律用中文描述，不写英文 message；类型前缀用中文动词（新增 / 修复 / 重构 / 文档 / 配置 / 测试 / 杂项）替代英文 conventional 前缀（feat / fix / refactor / docs / chore / test），例如写「新增：配置中心多源加载」而非「feat(config): add multi-source loading」。
 - **tests/ 目录按约定不入库（无需反复提及）**：`.gitignore` 已忽略整个 `tests/` 目录，这是**明确的项目约定**，不是误操作——测试代码只作为本地资产存在、不进版本库。故：① `git status`/提交时看不到 `tests/*.py` 是预期行为，**不要**把"测试文件未入库"当作异常去提醒或建议改 `.gitignore`；② 改动 `app/` 代码时配套写的本地测试照常跑（conda 环境），CLAUDE.md 里记录的测试数量反映的是**本地实际状态**，与 git 里是否存在测试文件无关；③ 提交只含 `app/` 生产代码 + 文档，测试文件不 `git add`。
@@ -91,6 +95,9 @@ api/        Controller 层：FastAPI 路由、参数校验、结果返回
 conda run -n claude-sdk pip install -r requirements.txt   # 安装依赖
 conda run -n claude-sdk python -m pytest tests/ -v        # 运行测试（须用 python -m，bin/pytest 入口找不到 app 包）
 APP_ENV=dev conda run -n claude-sdk python -c "from app.core.config import get_settings; print(get_settings().app.model_dump())"  # 查看生效配置
+cd web && pnpm install                                    # 安装前端依赖
+cd web && pnpm run dev                                    # 启动前端空壳工程
+cd web && pnpm run build                                  # 构建前端产物
 ```
 
 环境切换：`APP_ENV={dev,test,prod}` 选 yaml；configs 目录覆盖：环境变量 `APP_CONFIG_DIR`（默认 `<项目根>/configs`，容器/生产挂载到 `/etc/<app>` 等位置时设置）；敏感项覆盖：环境变量 `APP__<FIELD>` 或 `.env`（优先级 env > .env > yaml > 默认）。开发启动：`python main.py`（factory 模式，dev 自动 reload）或 `uvicorn "app.server:create_app" --factory --reload`。

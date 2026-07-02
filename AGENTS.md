@@ -66,6 +66,7 @@ api/        Controller 层：FastAPI 路由、参数校验、结果返回
 - **配置驱动**：按环境区分，配置文件放 `configs/`，由 `core/config.py` 统一加载。
 - **分层依赖单向**：`api → services → {agents/rag/skills/workflows/memory/mcp} → repositories`，跨层调用禁止逆向。
 - **LLM 访问收敛**：所有模型调用经 `core/llm/`，便于切换厂商与统一计费/限流。
+- **前端开发参考 `docs/front.md`**：涉及前端开发（页面、组件、样式）时，一律参考并遵循 `docs/front.md` 的规范，包括其中定义的样式 token（CSS 变量：配色 / 圆角 / 间距等）与视觉约定，不自行硬编码颜色、圆角等样式值。
 - **代码注释用中文**：所有新增代码的注释一律使用中文，包括模块 / 类 / 函数的 docstring 与行内说明；变量、函数、类等命名仍遵循 PEP 8 用英文。
 - **业务命名禁用下划线前缀（仅业务实体）**：业务实体命名——业务模块文件名、URL 路由/端点、Service 类、Schema 类、ORM 表名与字段、对外的类与函数等「业务公共契约」标识符——**一律不得以下划线 `_` 开头**；业务标识符作为分层间的公共 API，应清晰可见、不靠下划线隐藏。此约束**仅限业务实体**，不影响以下三类：① Python 模块私有变量/辅助函数（如 `gateway.py` 的 `_providers`、`config.py` 的 `_resolve_configs_dir()`）按惯例保留 `_` 前缀作实现细节封装；② dunder 方法（如 `__init__`、`__repr__`）属语言约定；③ 词内分隔符（如 `user_service`、`resolve_name`）属正常 snake_case。**反例**：`_UserService`、`_order_repository.py`、`/v1/_internal`；**正例**：`UserService`、`order_repository.py`、`/v1/internal`（要表达「内部」语义，用命名而非下划线前缀）。历史既有命名不回溯，仅约束后续新增。
 - **Git 提交信息用中文**：所有 commit 的标题与正文一律用中文描述，不写英文 message；类型前缀用中文动词（新增 / 修复 / 重构 / 文档 / 配置 / 测试 / 杂项）替代英文 conventional 前缀（feat / fix / refactor / docs / chore / test），例如写「新增：配置中心多源加载」而非「feat(config): add multi-source loading」。
