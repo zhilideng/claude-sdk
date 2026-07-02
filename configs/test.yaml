@@ -18,7 +18,7 @@ logging:
   enqueue: true
 
 db:
-  url: postgresql+asyncpg://user:pass@localhost:5432/app  # 占位 DSN（真值走环境变量 APP__DB__URL）
+  url: postgresql+asyncpg://user:pass@localhost:5432/claude-sdk  # 占位 DSN（真值走环境变量 APP__DB__URL）
   pool_size: 10
   max_overflow: 20
   pool_recycle: 3600
