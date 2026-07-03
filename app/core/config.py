@@ -23,12 +23,14 @@ from pydantic_settings import (
 # 此处 re-export 以保持 ``from app.core.config import AppSettings`` 的对外兼容。
 from app.core.settings import (
     AppSettings,
+    ClaudeAgentSettings,
     CorsSettings,
     DBSettings,
     LlmSettings,
     LoggingSettings,
     McpSettings,
     MilvusSettings,
+    ProjectSettings,
     RedisSettings,
     SkillSettings,
 )
@@ -95,6 +97,8 @@ class Settings(BaseSettings):
     llm: LlmSettings = LlmSettings()  # LLM 网关配置段（驱动 core/llm/）
     skills: SkillSettings = SkillSettings()  # skill 注册中心配置段（驱动 core/skills/）
     mcp: McpSettings = McpSettings()  # MCP Client 与独立 Server 配置段
+    projects: ProjectSettings = ProjectSettings()  # 本地项目导入配置段
+    claude_agent: ClaudeAgentSettings = ClaudeAgentSettings()  # Claude Agent SDK 配置段
 
     @classmethod
     def settings_customise_sources(

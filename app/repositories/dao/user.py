@@ -82,6 +82,35 @@ class UserRepository:
                 errno=DB_ERRNO_QUERY_FAILED,
             ) from exc
 
+    async def create_user(self, user_name: str, password: str) -> User:
+        """创建用户账号。
+
+        Args:
+            user_name: 用户名。
+            password: 明文密码；当前仅用于最小流程演示。
+
+        Returns:
+            已写入数据库的 ``User`` 对象。
+
+        Raises:
+            BizException: 数据库写入失败。
+        """
+        try:
+            user = User(user_name=user_name, password=password)
+            self._session.add(user)
+            await self._session.commit()
+            await self._session.refresh(user)
+            return user
+        except SQLAlchemyError as exc:
+            await self._session.rollback()
+            logger.error(
+                "user 创建失败 | name={} | err={}", user_name, exc
+            )
+            raise BizException(
+                message="用户创建失败",
+                errno=DB_ERRNO_QUERY_FAILED,
+            ) from exc
+
     async def list_users(
         self, limit: int = 20, offset: int = 0
     ) -> tuple[list[User], int]:

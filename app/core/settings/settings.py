@@ -20,6 +20,8 @@
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
 - ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
 - ``SkillSettings`` —— skill 注册中心配置（扫描根目录、总开关、懒加载缓存）。
+- ``ProjectSettings`` —— 本地项目导入配置（允许根目录、SDK 超时）。
+- ``ClaudeAgentSettings`` —— Claude Agent SDK 配置（全能力开放 + SSE 流式输出）。
 
 注：仅 HTTP 客户端参数仍写死（见 ``app/utils/http_client.py``），不进配置；
 CORS 跨域策略已改配置驱动（见 ``CorsSettings`` 段 + ``app/middleware/cors.py``）。
@@ -228,6 +230,37 @@ class SkillSettings(BaseModel):
     enabled: bool = True  # 总开关；false 时注册中心空运行
     base_dir: str = "app/skills"  # skill 内容根目录（相对项目根）
     cache_loaded: bool = True  # 是否缓存懒加载的 SkillBundle
+
+
+class ProjectSettings(BaseModel):
+    """本地项目导入配置段（对应 yaml 的 ``projects`` 段）。
+
+    项目路径属于本机敏感资源；Web MVP 不保存绝对路径，未来若通过桌面壳或
+    后端桥接拿到真实路径，必须先按 ``allowed_roots`` 做边界校验。
+    """
+
+    allowed_roots: list[str] = Field(
+        default_factory=lambda: ["/Users/zhili.deng/dzl-py"]
+    )  # 允许导入的本地根目录列表；生产或多人环境必须显式收敛
+    max_scan_files: int = Field(default=2000, gt=0)  # 预留：未来按需工具读取时的扫描上限
+    max_sample_files: int = Field(default=20, gt=0)  # 预留：未来按需工具读取时的样例上限
+    command_timeout: int = Field(default=300, gt=0)  # Claude Code SDK 单次执行超时秒数
+
+
+class ClaudeAgentSettings(BaseModel):
+    """Claude Agent SDK 配置段（对应 yaml 的 ``claude_agent`` 段）。
+
+    当前按产品目标开放 Claude Code SDK 全部能力，风险控制依赖运行环境边界、
+    SSE 可见性与后续审计，而不是工具白名单。
+    """
+
+    enabled: bool = True  # 是否启用真实 Claude Agent SDK；false 时服务层返回禁用错误
+    permission_mode: str = "bypassPermissions"  # 全能力开放：绕过工具审批
+    include_partial_messages: bool = True  # 开启 StreamEvent 增量输出
+    command_timeout: int = Field(default=300, gt=0)  # 单次 agent 执行超时秒数
+    default_cwd: str = "."  # root_path 为空时的安全默认工作目录
+    strict_mcp_config: bool = False  # false=允许合并项目/用户/插件 MCP 配置
+    mcp_servers: dict[str, dict] = Field(default_factory=dict)  # 传给 SDK 的 MCP server 配置
 
 
 class McpRemoteServerSettings(BaseModel):

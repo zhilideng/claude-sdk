@@ -11,7 +11,7 @@
 """
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserOut(BaseModel):
@@ -39,3 +39,23 @@ class UserListData(BaseModel):
     total: int  # 符合条件的总条数（分页元信息）
     limit: int  # 本次查询的每页条数
     offset: int  # 本次查询的偏移量
+
+
+class UserRegisterIn(BaseModel):
+    """用户注册请求体。"""
+
+    user_name: str = Field(..., min_length=1, max_length=255, description="用户名")
+    password: str = Field(..., min_length=1, max_length=255, description="密码")
+
+
+class UserLoginIn(BaseModel):
+    """用户登录请求体。"""
+
+    user_name: str = Field(..., min_length=1, max_length=255, description="用户名")
+    password: str = Field(..., min_length=1, max_length=255, description="密码")
+
+
+class UserAuthData(BaseModel):
+    """注册 / 登录成功后的数据体。"""
+
+    user: UserOut

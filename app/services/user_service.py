@@ -13,9 +13,15 @@
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exceptions import BizNotFoundError
+from app.exceptions import BizAuthError, BizNotFoundError, BizValidationError
 from app.repositories.dao import UserRepository
-from app.schemas.user import UserListData, UserOut
+from app.schemas.user import (
+    UserAuthData,
+    UserListData,
+    UserLoginIn,
+    UserOut,
+    UserRegisterIn,
+)
 
 
 class UserService:
@@ -66,3 +72,44 @@ class UserService:
             limit=limit,
             offset=offset,
         )
+
+    async def register(self, payload: UserRegisterIn) -> UserAuthData:
+        """注册用户账号。
+
+        Args:
+            payload: 注册请求数据，包含用户名与明文密码。
+
+        Returns:
+            注册成功后的用户信息。
+
+        Raises:
+            BizValidationError: 用户名已存在。
+        """
+        existing_name = await self._repo.get_by_username(payload.user_name)
+        if existing_name is not None:
+            raise BizValidationError("用户名已存在")
+
+        user = await self._repo.create_user(
+            user_name=payload.user_name,
+            password=payload.password,
+        )
+        return UserAuthData(user=UserOut.model_validate(user))
+
+    async def login(self, payload: UserLoginIn) -> UserAuthData:
+        """用户登录。
+
+        当前为最小流程：按用户名查用户，并直接比对明文密码。
+
+        Args:
+            payload: 登录请求数据。
+
+        Returns:
+            登录成功后的用户信息。
+
+        Raises:
+            BizAuthError: 用户不存在或密码不匹配。
+        """
+        user = await self._repo.get_by_username(payload.user_name)
+        if user is None or user.password != payload.password:
+            raise BizAuthError("用户名或密码错误")
+        return UserAuthData(user=UserOut.model_validate(user))

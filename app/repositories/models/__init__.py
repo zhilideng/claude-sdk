@@ -10,6 +10,7 @@
   以库 schema 为唯一事实来源，不在 ORM 层臆造或偏离。
 """
 from app.repositories.base import Base
+from app.repositories.models.project import Project, ProjectSession, SessionMessage
 from app.repositories.models.user import User
 
-__all__ = ["Base", "User"]
+__all__ = ["Base", "User", "Project", "ProjectSession", "SessionMessage"]

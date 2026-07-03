@@ -11,11 +11,45 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.schemas.user import UserListData, UserOut
+from app.schemas.user import (
+    UserAuthData,
+    UserListData,
+    UserLoginIn,
+    UserOut,
+    UserRegisterIn,
+)
 from app.services import UserService
 from app.utils.common import ApiResponse
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.post("/register")
+async def register_user(
+    payload: UserRegisterIn,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """注册用户账号。
+
+    当前实现为最小流程：密码明文保存，不签发 token。
+    """
+    service = UserService(db)
+    data: UserAuthData = await service.register(payload)
+    return ApiResponse.ok(data).to_payload()
+
+
+@router.post("/login")
+async def login_user(
+    payload: UserLoginIn,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """用户登录。
+
+    当前实现为最小流程：按用户名查询后直接比对明文密码。
+    """
+    service = UserService(db)
+    data: UserAuthData = await service.login(payload)
+    return ApiResponse.ok(data).to_payload()
 
 
 @router.get("")

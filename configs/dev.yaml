@@ -53,6 +53,23 @@ skills:
   base_dir: app/skills  # skill 内容根目录（相对项目根）
   cache_loaded: true  # 是否缓存懒加载的 SkillBundle
 
+projects:
+  allowed_roots:
+    - /Users/zhili.deng/dzl-py
+    - /Users/zhili.deng/codex
+  max_scan_files: 2000
+  max_sample_files: 20
+  command_timeout: 300
+
+claude_agent:
+  enabled: true
+  permission_mode: bypassPermissions
+  include_partial_messages: true
+  command_timeout: 300
+  default_cwd: /Users/zhili.deng/dzl-py/claude-sdk
+  strict_mcp_config: false
+  mcp_servers: {}
+
 mcp:
   client:
     enabled: true

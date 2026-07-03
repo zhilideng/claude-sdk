@@ -34,3 +34,6 @@ langchain-openai>=1.0.0  # LangChain 的 OpenAI 兼容 ChatModel provider（init
 
 # MCP Client / Server（官方 Python SDK；v2 尚处 alpha，生产锁定稳定 v1）
 mcp>=1.27,<2
+
+# Claude Code Agent SDK（真实 agent loop + 工具调用 + 流式事件）
+claude-agent-sdk

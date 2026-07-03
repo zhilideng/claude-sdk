@@ -13,6 +13,16 @@ service 层；DB 异常统一转 ``BizException``。
 与 ``models/`` 的关系：models 描述「表结构」（被访问的数据），dao 描述「如何访问」
 （访问者），二者并列于 ``repositories`` 下、互不交叉。
 """
+from app.repositories.dao.project import (
+    ProjectRepository,
+    ProjectSessionRepository,
+    SessionMessageRepository,
+)
 from app.repositories.dao.user import UserRepository
 
-__all__ = ["UserRepository"]
+__all__ = [
+    "UserRepository",
+    "ProjectRepository",
+    "ProjectSessionRepository",
+    "SessionMessageRepository",
+]
