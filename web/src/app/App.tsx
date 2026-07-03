@@ -79,9 +79,12 @@ type StreamEventEnvelope = {
 type ToolStatus = {
   id: string;
   name: string;
+  category: ToolCategory;
   status: "running" | "done";
   partial: string;
 };
+
+type ToolCategory = "thinking" | "terminal" | "file" | "search" | "mcp" | "tool";
 
 type CreateProjectForm = {
   directoryName: string;
@@ -353,6 +356,8 @@ function WorkspacePage({
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === activeSessionId) ?? null;
+  const hasConversationContent =
+    messages.length > 0 || isSending || Boolean(streamingText) || streamTools.length > 0;
 
   const loadProjects = async (preferredSessionId?: number) => {
     setIsLoadingProjects(true);
@@ -410,7 +415,7 @@ function WorkspacePage({
   const handleCreateProject = async (form: CreateProjectForm) => {
     const data = await requestImportProject(user.id, form);
     setIsCreateModalOpen(false);
-    setNotice(`已导入 ${data.project.name}`);
+    setNotice("");
     await loadProjects(data.default_session.id);
   };
 
@@ -465,7 +470,7 @@ function WorkspacePage({
           const name = String(event.data.name ?? "tool");
           setStreamTools((items) => [
             ...items,
-            { id, name, status: "running", partial: "", },
+            { id, name, category: getToolCategory(name), status: "running", partial: "", },
           ]);
         }
         if (event.type === "tool_delta") {
@@ -637,71 +642,60 @@ function WorkspacePage({
         </header>
 
         <div className="conversation-scroll">
-          <article className="assistant-message">
-            {activeProject ? (
-              <ProjectSummary project={activeProject} />
-            ) : (
-              <EmptyWorkspace onCreate={() => setIsCreateModalOpen(true)} />
-            )}
+          {activeProject && activeSession && !hasConversationContent ? (
+            <EmptyProjectPrompt
+              project={activeProject}
+              activeSession={activeSession}
+              composerText={composerText}
+              isSending={isSending}
+              onChange={setComposerText}
+              onSubmit={handleSendMessage}
+              notice={notice}
+              onModeClick={() => setNotice("审批模式待接入")}
+            />
+          ) : (
+            <article className="assistant-message">
+              {!activeProject ? <EmptyWorkspace onCreate={() => setIsCreateModalOpen(true)} /> : null}
 
-            {notice ? <p className="mock-status">{notice}</p> : null}
+              {notice ? <p className="mock-status">{notice}</p> : null}
 
-            {messages.length > 0 ? (
-              <div className="local-message-list">
-                {messages.map((item) => (
-                  <MessageBubble key={item.id} message={item} />
-                ))}
-                {isSending || streamingText || streamTools.length > 0 ? (
-                  <StreamingMessage content={streamingText} tools={streamTools} />
-                ) : null}
-              </div>
-            ) : activeProject ? (
-              <>
-                {isSending || streamingText || streamTools.length > 0 ? (
-                  <div className="local-message-list">
+              {messages.length > 0 ? (
+                <div className="local-message-list">
+                  {messages.map((item) => (
+                    <MessageBubble key={item.id} message={item} />
+                  ))}
+                  {isSending || streamingText || streamTools.length > 0 ? (
                     <StreamingMessage content={streamingText} tools={streamTools} />
-                  </div>
-                ) : (
-                  <p className="workspace-empty-message">当前会话还没有消息。</p>
-                )}
-              </>
-            ) : null}
-          </article>
+                  ) : null}
+                </div>
+              ) : activeProject && hasConversationContent ? (
+                <div className="local-message-list">
+                  <StreamingMessage content={streamingText} tools={streamTools} />
+                </div>
+              ) : null}
+            </article>
+          )}
         </div>
 
-        <footer className="composer-wrap">
-          <div className="message-actions" aria-hidden="true">
-            <span>□</span>
-            <span>♡</span>
-            <span>↗</span>
-            <span>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-          </div>
-          <form className="composer" onSubmit={handleSendMessage}>
-            <textarea
-              placeholder={activeSession ? "要求后续变更" : "请先创建或选择项目会话"}
-              rows={3}
-              value={composerText}
-              disabled={!activeSession || isSending}
-              onChange={(event) => setComposerText(event.target.value)}
-            />
-            <div className="composer-toolbar">
-              <button type="button" onClick={() => setComposerText((value) => `${value}+ `)}>
-                ＋
-              </button>
-              <button type="button" onClick={() => setNotice("审批模式待接入")}>
-                替我审批⌄
-              </button>
-              <span>Claude Code⌄</span>
-              <button
-                type="submit"
-                aria-label="发送"
-                disabled={!composerText.trim() || !activeSession || isSending}
-              >
-                {isSending ? "…" : "↑"}
-              </button>
+        {hasConversationContent ? (
+          <footer className="composer-wrap">
+            <div className="message-actions" aria-hidden="true">
+              <span>□</span>
+              <span>♡</span>
+              <span>↗</span>
+              <span>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
             </div>
-          </form>
-        </footer>
+            <PromptComposer
+              activeSession={activeSession}
+              composerText={composerText}
+              isSending={isSending}
+              placeholder={activeSession ? "要求后续变更" : "请先创建或选择项目会话"}
+              onChange={setComposerText}
+              onSubmit={handleSendMessage}
+              onModeClick={() => setNotice("审批模式待接入")}
+            />
+          </footer>
+        ) : null}
       </section>
 
       {isCreateModalOpen ? (
@@ -711,34 +705,100 @@ function WorkspacePage({
         />
       ) : null}
 
-      <button className="floating-help" type="button" aria-label="帮助">
-        ●
-      </button>
+      <div className="window-corner-actions" aria-hidden="true">
+        <span />
+        <span />
+      </div>
     </main>
   );
 }
 
-function ProjectSummary({ project }: { project: Project }) {
+function EmptyProjectPrompt({
+  project,
+  activeSession,
+  composerText,
+  isSending,
+  notice,
+  onChange,
+  onSubmit,
+  onModeClick,
+}: {
+  project: Project;
+  activeSession: ProjectSession;
+  composerText: string;
+  isSending: boolean;
+  notice: string;
+  onChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onModeClick: () => void;
+}) {
   return (
-    <>
-      <pre className="code-preview">{`{
-  "project": "${project.name}",
-  "source_type": "${project.source_type}",
-  "sessions": ${project.sessions.length}
-}`}</pre>
-      <p>
-        已导入本地项目 <code>{project.name}</code>。当前不会预扫描并保存文件列表；
-        具体需求会在会话执行时再通过工具按需读取。
-      </p>
-      <div className="verification-block">
-        <strong>项目摘要：</strong>
-        <ul>
-          <li>项目名称来自选择的本地目录名</li>
-          <li>文件内容不入库，不在创建项目时扫描文件清单</li>
-          <li>真实 cwd 绑定需要桌面壳或后端目录选择桥接提供绝对路径</li>
-        </ul>
+    <section className="empty-project-prompt" aria-label="新会话输入">
+      <div className="empty-prompt-inner">
+        <h2>我们应该在 {project.name} 中构建什么？</h2>
+        <PromptComposer
+          activeSession={activeSession}
+          composerText={composerText}
+          isSending={isSending}
+          placeholder="随心输入"
+          onChange={onChange}
+          onSubmit={onSubmit}
+          onModeClick={onModeClick}
+        />
+        <div className="project-context-bar" aria-label="项目上下文">
+          <span>▦ {project.name}</span>
+          <span>▱ 本地模式⌄</span>
+          <span>⌘ main⌄</span>
+        </div>
+        {notice ? <p className="mock-status">{notice}</p> : null}
       </div>
-    </>
+    </section>
+  );
+}
+
+function PromptComposer({
+  activeSession,
+  composerText,
+  isSending,
+  placeholder,
+  onChange,
+  onSubmit,
+  onModeClick,
+}: {
+  activeSession: ProjectSession | null;
+  composerText: string;
+  isSending: boolean;
+  placeholder: string;
+  onChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onModeClick: () => void;
+}) {
+  return (
+    <form className="composer" onSubmit={onSubmit}>
+      <textarea
+        placeholder={placeholder}
+        rows={3}
+        value={composerText}
+        disabled={!activeSession || isSending}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <div className="composer-toolbar">
+        <button type="button" onClick={() => onChange(`${composerText}+ `)}>
+          ＋
+        </button>
+        <button type="button" onClick={onModeClick}>
+          替我审批⌄
+        </button>
+        <span>5.5 中⌄</span>
+        <button
+          type="submit"
+          aria-label="发送"
+          disabled={!composerText.trim() || !activeSession || isSending}
+        >
+          {isSending ? "…" : "↑"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -754,22 +814,100 @@ function EmptyWorkspace({ onCreate }: { onCreate: () => void }) {
   );
 }
 
+const categoryMeta: Record<
+  ToolCategory,
+  { action: string; icon: string; label: string }
+> = {
+  thinking: { action: "思考", icon: "◇", label: "思考" },
+  terminal: { action: "执行命令", icon: "$", label: "命令" },
+  file: { action: "处理文件", icon: "□", label: "文件" },
+  search: { action: "查找上下文", icon: "#", label: "检索" },
+  mcp: { action: "调用 MCP", icon: "⌁", label: "MCP" },
+  tool: { action: "调用工具", icon: "⊞", label: "工具" },
+};
+
+function getToolCategory(name: string): ToolCategory {
+  const normalized = name.toLowerCase();
+  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("command")) {
+    return "terminal";
+  }
+  if (
+    normalized.includes("read") ||
+    normalized.includes("write") ||
+    normalized.includes("edit") ||
+    normalized.includes("file") ||
+    normalized.includes("patch")
+  ) {
+    return "file";
+  }
+  if (
+    normalized.includes("grep") ||
+    normalized.includes("glob") ||
+    normalized.includes("search") ||
+    normalized.includes("find")
+  ) {
+    return "search";
+  }
+  if (normalized.includes("mcp")) {
+    return "mcp";
+  }
+  return "tool";
+}
+
+function normalizeToolSummary(items: Record<string, unknown>[]): ToolStatus[] {
+  const ordered: ToolStatus[] = [];
+  const byId = new Map<string, ToolStatus>();
+  items.forEach((item, index) => {
+    const name = String(item.name ?? item.tool ?? "tool");
+    const id = String(item.id ?? `${name}-${index}`);
+    const type = String(item.type ?? "");
+    let current = byId.get(id);
+    if (!current) {
+      current = {
+        id,
+        name,
+        category: getToolCategory(name),
+        status: "done",
+        partial: "",
+      };
+      byId.set(id, current);
+      ordered.push(current);
+    }
+
+    if (type === "tool_start") {
+      current.status = "running";
+      current.partial = summarizeToolPayload(item.input) || current.partial;
+    }
+    if (type === "tool_delta") {
+      current.partial = `${current.partial}${String(item.partial ?? "")}`.slice(-220);
+    }
+    if (type === "tool_done") {
+      current.status = "done";
+    }
+    if (!type) {
+      current.partial = summarizeToolPayload(item) || current.partial;
+    }
+  });
+  return ordered.map((item) => ({ ...item, status: "done" }));
+}
+
+function summarizeToolPayload(value: unknown): string {
+  if (!value) {
+    return "";
+  }
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > 220 ? `${text.slice(0, 220)}...` : text;
+}
+
 function MessageBubble({ message }: { message: SessionMessage }) {
   const isAssistant = message.role === "assistant";
+  const toolItems = normalizeToolSummary(message.tool_summary);
   return (
     <div className={isAssistant ? "message-bubble assistant" : "message-bubble user"}>
       <strong>{isAssistant ? "Claude" : "你"}</strong>
       <p>{message.content}</p>
-      {message.tool_summary.length > 0 ? (
-        <div className="diff-card compact">
-          <div className="diff-card-header">
-            <div className="file-icon">⊞</div>
-            <div>
-              <strong>工具调用</strong>
-              <span>{message.tool_summary.length} 条记录</span>
-            </div>
-          </div>
-        </div>
+      {toolItems.length > 0 ? (
+        <ProcessTimeline tools={toolItems} state="done" />
       ) : null}
     </div>
   );
@@ -778,22 +916,67 @@ function MessageBubble({ message }: { message: SessionMessage }) {
 function StreamingMessage({ content, tools }: { content: string; tools: ToolStatus[] }) {
   return (
     <div className="message-bubble assistant streaming">
-      <strong>Claude</strong>
-      {tools.length > 0 ? (
-        <div className="stream-tool-list">
-          {tools.map((tool) => (
-            <div className="stream-tool-item" key={tool.id}>
-              <span className={tool.status === "done" ? "tool-dot done" : "tool-dot"} />
-              <div>
-                <strong>{tool.name}</strong>
+      <ProcessTimeline tools={tools} state="running" />
+      {content ? <p>{content}</p> : null}
+    </div>
+  );
+}
+
+function ProcessTimeline({
+  tools,
+  state,
+}: {
+  tools: ToolStatus[];
+  state: "running" | "done";
+}) {
+  const visibleTools =
+    tools.length > 0
+      ? tools
+      : [
+          {
+            id: "thinking",
+            name: "理解需求",
+            category: "thinking" as ToolCategory,
+            status: state === "done" ? "done" : "running",
+            partial: "正在分析上下文并规划下一步",
+          },
+        ];
+  const categoryNames = Array.from(new Set(visibleTools.map((tool) => tool.category)));
+  return (
+    <section className="process-panel" aria-label="Claude 执行过程">
+      <header className="process-header">
+        <span className={state === "running" ? "process-spinner" : "process-done"} />
+        <div>
+          <strong>{state === "running" ? "Claude 正在处理" : "处理过程"}</strong>
+          <span>{visibleTools.length} 个步骤</span>
+        </div>
+      </header>
+      <div className="process-chips" aria-label="过程分类">
+        {categoryNames.map((category) => (
+          <span key={category}>{categoryMeta[category].label}</span>
+        ))}
+      </div>
+      <div className="process-steps">
+        {visibleTools.map((tool) => {
+          const meta = categoryMeta[tool.category];
+          return (
+            <article className="process-step" key={tool.id}>
+              <span className="process-step-icon" aria-hidden="true">
+                {meta.icon}
+              </span>
+              <div className="process-step-main">
+                <div className="process-step-title">
+                  <strong>{meta.action}</strong>
+                  <span>{tool.name}</span>
+                  <small>{tool.status === "done" ? "完成" : "进行中"}</small>
+                </div>
                 {tool.partial ? <code>{tool.partial}</code> : null}
               </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <p>{content || "正在思考..."}</p>
-    </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
