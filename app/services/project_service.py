@@ -109,7 +109,7 @@ class ProjectService:
         return ProjectListData(items=[self._to_project_out(project) for project in valid_projects])
 
     async def import_local_path(self, payload: ProjectImportIn) -> ProjectImportData:
-        """导入浏览器选择的本地目录，并创建默认会话。"""
+        """导入浏览器选择的本地目录，保持新对话草稿态。"""
         await self._ensure_user(payload.user_id)
         project_name = payload.directory_name.strip()
         project_root_path: str | None = None
@@ -130,17 +130,8 @@ class ProjectService:
             if existing_project is not None:
                 reloaded = await self._project_repo.get_by_id(existing_project.id)
                 project = reloaded or existing_project
-                default_session = self._pick_default_session(project)
-                if default_session is None:
-                    default_session = await self._session_repo.create_session(
-                        project_id=project.id,
-                        title=f"导入 {project.name}",
-                    )
-                    await self._session_repo.commit()
-                    project = await self._project_repo.get_by_id(project.id) or project
                 return ProjectImportData(
                     project=self._to_project_out(project),
-                    default_session=ProjectSessionOut.model_validate(default_session),
                 )
 
         try:
@@ -151,15 +142,10 @@ class ProjectService:
                 source_type="local_path" if project_root_path else "browser_directory",
                 is_git_repo=is_git_repo,
             )
-            default_session = await self._session_repo.create_session(
-                project_id=project.id,
-                title=f"导入 {project_name}",
-            )
             await self._project_repo.commit()
             reloaded = await self._project_repo.get_by_id(project.id)
             return ProjectImportData(
                 project=self._to_project_out(reloaded or project),
-                default_session=ProjectSessionOut.model_validate(default_session),
             )
         except Exception:
             await self._project_repo.rollback()
@@ -250,13 +236,6 @@ class ProjectService:
         if not root_path:
             return None
         return str(Path(root_path).expanduser())
-
-    @staticmethod
-    def _pick_default_session(project: Project) -> ProjectSession | None:
-        """选择项目下默认进入的会话。"""
-        if not project.sessions:
-            return None
-        return sorted(project.sessions, key=lambda value: value.id, reverse=True)[0]
 
     def _is_workspace_root_project(self, project: Project) -> bool:
         """判断项目是否误绑定到服务端临时工作区。"""

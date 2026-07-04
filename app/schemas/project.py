@@ -74,7 +74,7 @@ class ProjectImportData(BaseModel):
     """项目导入成功数据体。"""
 
     project: ProjectOut
-    default_session: ProjectSessionOut
+    default_session: ProjectSessionOut | None = None
 
 
 class ProjectSessionCreateIn(BaseModel):

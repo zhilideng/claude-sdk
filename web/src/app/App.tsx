@@ -73,7 +73,7 @@ type ProjectListData = {
 
 type ProjectImportData = {
   project: Project;
-  default_session: ProjectSession;
+  default_session: ProjectSession | null;
 };
 
 type WorkspaceSnapshot = {
@@ -172,6 +172,12 @@ type CopyContentHandler = (content: string, label: string) => void;
 type CreateProjectForm = {
   directoryName: string;
   rootPath: string;
+};
+
+type LoadProjectsOptions = {
+  preferredProjectId?: number;
+  preferredSessionId?: number | null;
+  draftSession?: boolean;
 };
 
 const initialForm: FormState = {
@@ -688,28 +694,41 @@ function WorkspacePage({
     return () => window.clearInterval(timer);
   }, [isSending]);
 
-  const loadProjects = async (preferredSessionId?: number) => {
+  const loadProjects = async (options: number | LoadProjectsOptions = {}) => {
     setIsLoadingProjects(true);
     try {
       const data = await requestProjects(user.id);
       const snapshot = readWorkspaceSnapshot(user.id);
+      const loadOptions =
+        typeof options === "number" ? { preferredSessionId: options } : options;
+      const preferredSessionId = loadOptions.preferredSessionId ?? undefined;
+      const preferredProjectId =
+        loadOptions.preferredProjectId ??
+        (preferredSessionId ? null : snapshot.activeProjectId);
+      const shouldUseDraftSession = loadOptions.draftSession === true;
       setProjects(data.items);
-      const preferredProjectId = preferredSessionId ? null : snapshot.activeProjectId;
-      const preferredSnapshotSessionId = preferredSessionId ?? snapshot.activeSessionId ?? undefined;
+      const preferredSnapshotSessionId = shouldUseDraftSession
+        ? undefined
+        : (preferredSessionId ?? snapshot.activeSessionId ?? undefined);
       const nextProject =
-        data.items.find((project) =>
-          project.sessions.some((session) => session.id === preferredSnapshotSessionId),
-        ) ??
+        (preferredSnapshotSessionId
+          ? data.items.find((project) =>
+              project.sessions.some((session) => session.id === preferredSnapshotSessionId),
+            )
+          : null) ??
         data.items.find((project) => project.id === preferredProjectId) ??
         data.items[0] ??
         null;
       const nextSession =
-        nextProject?.sessions.find((session) => session.id === preferredSnapshotSessionId) ??
-        nextProject?.sessions[0] ??
-        null;
+        shouldUseDraftSession
+          ? null
+          : (nextProject?.sessions.find((session) => session.id === preferredSnapshotSessionId) ??
+            nextProject?.sessions[0] ??
+            null);
+      const nextIsDraftSession = Boolean(nextProject && (shouldUseDraftSession || !nextSession));
       setActiveProjectId(nextProject?.id ?? null);
       setActiveSessionId(nextSession?.id ?? null);
-      setIsDraftSession(false);
+      setIsDraftSession(nextIsDraftSession);
       saveWorkspaceSnapshot(user.id, {
         activeProjectId: nextProject?.id ?? null,
         activeSessionId: nextSession?.id ?? null,
@@ -774,16 +793,27 @@ function WorkspacePage({
     const data = await requestImportProject(user.id, form);
     saveWorkspaceSnapshot(user.id, {
       activeProjectId: data.project.id,
-      activeSessionId: data.default_session.id,
+      activeSessionId: null,
       projectPaths: collectProjectPaths(
         [data.project],
         readWorkspaceSnapshot(user.id).projectPaths,
       ),
     });
     setIsCreateModalOpen(false);
-    setIsDraftSession(false);
+    setIsDraftSession(true);
+    setMessages([]);
+    setComposerText("");
     setNotice("");
-    await loadProjects(data.default_session.id);
+    pendingLocalFailedMessageRef.current = null;
+    setStreamingText("");
+    setStreamTools([]);
+    setStreamStatus("");
+    updateAiRequestState(null);
+    await loadProjects({
+      preferredProjectId: data.project.id,
+      preferredSessionId: null,
+      draftSession: true,
+    });
   };
 
   const handleCreateSession = async () => {
@@ -1166,7 +1196,7 @@ function WorkspacePage({
                     const nextSessionId = project.sessions[0]?.id ?? null;
                     setActiveProjectId(project.id);
                     setActiveSessionId(nextSessionId);
-                    setIsDraftSession(false);
+                    setIsDraftSession(!nextSessionId);
                     pendingLocalFailedMessageRef.current = null;
                     setStreamingText("");
                     setStreamTools([]);
