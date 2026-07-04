@@ -23,6 +23,12 @@ import {
   type AiRequestStage,
   type AiRequestState,
 } from "../features/ai-request-status/aiRequestStatus";
+import {
+  clearBrowserAuthUser,
+  readBrowserAuthUser,
+  saveBrowserAuthUser,
+  type AuthUser,
+} from "./authSession";
 
 type AuthMode = "login" | "register";
 
@@ -31,11 +37,6 @@ type ApiResponse<T> = {
   message: string;
   data: T | null;
   errno?: number;
-};
-
-type AuthUser = {
-  id: number;
-  user_name: string | null;
 };
 
 type AuthData = {
@@ -491,7 +492,7 @@ export default function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [form, setForm] = useState<FormState>(initialForm);
   const [message, setMessage] = useState("");
-  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => readBrowserAuthUser());
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const submitText = useMemo(() => (mode === "register" ? "注册账号" : "登录"), [mode]);
@@ -512,6 +513,9 @@ export default function App() {
       const result = await requestAuth(mode, form);
       setCurrentUser(result.user);
       setMessage(mode === "register" ? "注册成功" : "登录成功");
+      if (mode === "login") {
+        saveBrowserAuthUser(result.user);
+      }
       if (mode === "register") {
         setForm(initialForm);
       }
@@ -527,6 +531,7 @@ export default function App() {
       <WorkspacePage
         user={currentUser}
         onLogout={() => {
+          clearBrowserAuthUser();
           setCurrentUser(null);
           setMessage("");
           setForm(initialForm);
