@@ -7,6 +7,22 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  AI_TIMEOUT_CONFIG,
+  buildAiDiagnosticText,
+  buildAiErrorSummaryText,
+  calculateAiDurationMetrics,
+  createAiRequestState,
+  formatAiDuration,
+  formatAiStage,
+  normalizeAiError,
+  resolveAiErrorActions,
+  type AiDurationMetrics,
+  type AiErrorAction,
+  type AiRequestError,
+  type AiRequestStage,
+  type AiRequestState,
+} from "../features/ai-request-status/aiRequestStatus";
 
 type AuthMode = "login" | "register";
 
@@ -75,6 +91,10 @@ type SessionMessage = {
   tool_summary: Record<string, unknown>[];
   diff_summary: Record<string, unknown>[];
   created_at: string | null;
+  ai_error?: AiRequestError;
+  ai_metrics?: AiDurationMetrics;
+  partial_content?: string;
+  generated_partial?: boolean;
 };
 
 type SessionMessageListData = {
@@ -160,6 +180,23 @@ const initialForm: FormState = {
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
+const appVersion = import.meta.env.VITE_APP_VERSION ?? "0.1.0";
+
+type SendMessageStreamOptions = {
+  signal?: AbortSignal;
+  onConnected?: () => void;
+  onFirstToken?: () => void;
+};
+
+class AiStreamRequestError extends Error {
+  data?: Record<string, unknown>;
+
+  constructor(message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = "AiStreamRequestError";
+    this.data = data;
+  }
+}
 
 function getWorkspaceSnapshotKey(userId: number) {
   return `claude-sdk.workspace.${userId}`;
@@ -228,7 +265,13 @@ function summarizeSessionTitle(content: string) {
   return title.length > 32 ? `${title.slice(0, 32)}...` : title;
 }
 
-function createLocalFailedMessage(sessionId: number, content: string): SessionMessage {
+function createLocalFailedMessage(
+  sessionId: number,
+  content: string,
+  aiError?: AiRequestError,
+  partialContent?: string,
+  metrics?: AiDurationMetrics,
+): SessionMessage {
   return {
     id: -Date.now() - 1,
     session_id: sessionId,
@@ -238,6 +281,10 @@ function createLocalFailedMessage(sessionId: number, content: string): SessionMe
     tool_summary: [],
     diff_summary: [],
     created_at: new Date().toISOString(),
+    ai_error: aiError,
+    ai_metrics: metrics,
+    partial_content: partialContent,
+    generated_partial: Boolean(partialContent),
   };
 }
 
@@ -347,6 +394,7 @@ async function requestSendMessageStream(
   sessionId: number,
   content: string,
   onEvent: (event: StreamEventEnvelope) => void,
+  options: SendMessageStreamOptions = {},
 ): Promise<void> {
   const response = await fetch(`${apiBaseUrl}/v1/sessions/${sessionId}/messages/stream`, {
     method: "POST",
@@ -354,22 +402,46 @@ async function requestSendMessageStream(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ user_id: userId, content }),
+    signal: options.signal,
   }).catch((error) => {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
     const detail = error instanceof Error && error.message ? `：${error.message}` : "";
-    throw new Error(`推理连接中断，请检查后端服务状态${detail}`);
+    throw new AiStreamRequestError(`推理连接中断，请检查后端服务状态${detail}`, {
+      error_code: "CONNECTION_FAILED",
+      error_type: "connection_failed",
+      message: `推理连接中断，请检查后端服务状态${detail}`,
+      stage: "connecting",
+      retryable: true,
+    });
   });
 
   if (!response.ok) {
-    const result = (await response.json().catch(() => null)) as ApiResponse<unknown> | null;
-    throw new Error(result?.message || "消息发送失败");
+    const result = (await response.json().catch(() => null)) as ApiResponse<
+      Record<string, unknown>
+    > | null;
+    throw new AiStreamRequestError(result?.message || "消息发送失败", {
+      ...(result?.data ?? {}),
+      message: result?.message || "消息发送失败",
+      stage: "connecting",
+      retryable: response.status >= 500,
+    });
   }
   if (!response.body) {
-    throw new Error("当前浏览器不支持流式响应");
+    throw new AiStreamRequestError("当前浏览器不支持流式响应", {
+      error_code: "UNKNOWN_ERROR",
+      message: "当前浏览器不支持流式响应",
+      stage: "connecting",
+      retryable: false,
+    });
   }
 
+  options.onConnected?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let hasFirstToken = false;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -386,10 +458,20 @@ async function requestSendMessageStream(
         continue;
       }
       const event = JSON.parse(dataLines.join("\n")) as StreamEventEnvelope;
+      if (event.type === "assistant_delta" && !hasFirstToken) {
+        const contentValue = event.data.content;
+        if (typeof contentValue === "string" && contentValue.length > 0) {
+          hasFirstToken = true;
+          options.onFirstToken?.();
+        }
+      }
       onEvent(event);
       if (event.type === "agent_error") {
         const message = event.data.message;
-        throw new Error(typeof message === "string" ? message : "推理失败，请稍后重试");
+        throw new AiStreamRequestError(
+          typeof message === "string" ? message : "推理失败，请稍后重试",
+          event.data,
+        );
       }
     }
 
@@ -540,7 +622,12 @@ function WorkspacePage({
   const [streamingText, setStreamingText] = useState("");
   const [streamTools, setStreamTools] = useState<ToolStatus[]>([]);
   const [streamStatus, setStreamStatus] = useState("");
+  const [aiRequestState, setAiRequestState] = useState<AiRequestState | null>(null);
+  const [requestElapsedMs, setRequestElapsedMs] = useState(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const aiRequestStateRef = useRef<AiRequestState | null>(null);
+  const streamingTextRef = useRef("");
   const pendingLocalFailedMessageRef = useRef<{
     userMessage: SessionMessage | null;
     failedMessage: SessionMessage;
@@ -552,6 +639,54 @@ function WorkspacePage({
   const canCompose = Boolean(activeSession || (activeProject && isDraftSession));
   const hasConversationContent =
     messages.length > 0 || isSending || Boolean(streamingText) || streamTools.length > 0;
+
+  const updateAiRequestState = (
+    updater: AiRequestState | ((current: AiRequestState | null) => AiRequestState | null) | null,
+  ) => {
+    setAiRequestState((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      aiRequestStateRef.current = next;
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    streamingTextRef.current = streamingText;
+  }, [streamingText]);
+
+  useEffect(() => {
+    if (!isSending || !aiRequestStateRef.current) {
+      setRequestElapsedMs(0);
+      return undefined;
+    }
+
+    const refreshElapsed = () => {
+      const state = aiRequestStateRef.current;
+      if (!state) {
+        return;
+      }
+      const metrics = calculateAiDurationMetrics(state.timing);
+      setRequestElapsedMs(metrics.durationMs);
+      updateAiRequestState((current) => {
+        if (!current) {
+          return current;
+        }
+        const shouldShowSlow =
+          metrics.durationMs >= AI_TIMEOUT_CONFIG.chat.slowHintMs &&
+          current.status !== "streaming" &&
+          current.status !== "tool_calling";
+        return {
+          ...current,
+          status: shouldShowSlow ? "slow" : current.status,
+          metrics,
+        };
+      });
+    };
+
+    refreshElapsed();
+    const timer = window.setInterval(refreshElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [isSending]);
 
   const loadProjects = async (preferredSessionId?: number) => {
     setIsLoadingProjects(true);
@@ -632,6 +767,7 @@ function WorkspacePage({
     setStreamingText("");
     setStreamTools([]);
     setStreamStatus("");
+    updateAiRequestState(null);
   };
 
   const handleCreateProject = async (form: CreateProjectForm) => {
@@ -664,7 +800,13 @@ function WorkspacePage({
     setStreamingText("");
     setStreamTools([]);
     setStreamStatus("");
+    updateAiRequestState(null);
     setIsMobileSidebarOpen(false);
+  };
+
+  const handleCancelGeneration = () => {
+    abortControllerRef.current?.abort();
+    setStreamStatus("正在停止");
   };
 
   const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
@@ -679,6 +821,19 @@ function WorkspacePage({
     setStreamingText("");
     setStreamTools([]);
     setStreamStatus("思考中");
+    const requestStartAt = Date.now();
+    updateAiRequestState({
+      ...createAiRequestState(requestStartAt),
+      status: "connecting",
+      stage: "connecting",
+      timing: {
+        requestStartAt,
+        connectionStartAt: requestStartAt,
+      },
+    });
+    setRequestElapsedMs(0);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     let targetSessionId = activeSessionId;
     let optimisticUserMessage: SessionMessage | null = null;
     try {
@@ -710,16 +865,61 @@ function WorkspacePage({
       await requestSendMessageStream(user.id, targetSessionId, nextMessage, (event) => {
         if (event.type === "agent_started") {
           setStreamStatus("思考中");
+          updateAiRequestState((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "reasoning",
+                  stage: "reasoning",
+                }
+              : current,
+          );
+        }
+        if (event.type === "stage") {
+          const stage = normalizeAiStage(event.data.stage);
+          if (stage) {
+            const message = event.data.message;
+            setStreamStatus(typeof message === "string" ? message : formatAiStage(stage));
+            updateAiRequestState((current) =>
+              current
+                ? {
+                    ...current,
+                    status: stage === "tool_calling" ? "tool_calling" : "reasoning",
+                    stage,
+                  }
+                : current,
+            );
+          }
         }
         if (event.type === "assistant_delta") {
           setStreamStatus("推理中");
           const content = event.data.content;
           if (typeof content === "string") {
             setStreamingText((value) => `${value}${content}`);
+            updateAiRequestState((current) =>
+              current
+                ? {
+                    ...current,
+                    status: "streaming",
+                    stage: "streaming",
+                    generatedPartial: true,
+                    partialContent: `${streamingTextRef.current}${content}`,
+                  }
+                : current,
+            );
           }
         }
         if (event.type === "tool_start") {
           setStreamStatus("推理中");
+          updateAiRequestState((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "tool_calling",
+                  stage: "tool_calling",
+                }
+              : current,
+          );
           const id = String(event.data.id ?? `${event.sequence}`);
           const name = String(event.data.name ?? "tool");
           setStreamTools((items) => [
@@ -746,25 +946,111 @@ function WorkspacePage({
         }
         if (event.type === "sdk_result" || event.type === "assistant_message_saved") {
           setStreamStatus("整理中");
+          updateAiRequestState((current) =>
+            current
+              ? {
+                  ...current,
+                  stage: "saving",
+                }
+              : current,
+          );
         }
         if (event.type === "agent_error") {
           const message = event.data.message;
           setStreamStatus(typeof message === "string" ? message : "推理失败");
         }
+      }, {
+        signal: abortController.signal,
+        onConnected: () => {
+          updateAiRequestState((current) => {
+            if (!current) {
+              return current;
+            }
+            const timing = {
+              ...current.timing,
+              connectionEndAt: Date.now(),
+            };
+            return {
+              ...current,
+              status: "reasoning",
+              stage: "reasoning",
+              timing,
+              metrics: calculateAiDurationMetrics(timing),
+            };
+          });
+        },
+        onFirstToken: () => {
+          updateAiRequestState((current) => {
+            if (!current || current.timing.firstTokenAt) {
+              return current;
+            }
+            const timing = {
+              ...current.timing,
+              firstTokenAt: Date.now(),
+            };
+            return {
+              ...current,
+              status: "streaming",
+              stage: "streaming",
+              timing,
+              metrics: calculateAiDurationMetrics(timing),
+              generatedPartial: true,
+            };
+          });
+        },
       });
       const data = await requestMessages(user.id, targetSessionId);
       setMessages(data.items);
       setStreamingText("");
       setStreamTools([]);
       setStreamStatus("");
+      updateAiRequestState(null);
       setIsDraftSession(false);
       pendingLocalFailedMessageRef.current = null;
       await loadProjects(targetSessionId);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "推理失败，请稍后重试";
+      const currentAiState = aiRequestStateRef.current;
+      const finalTiming = {
+        ...(currentAiState?.timing ?? { requestStartAt }),
+        requestEndAt: Date.now(),
+      };
+      const metrics = calculateAiDurationMetrics(finalTiming);
+      const partialContent = streamingTextRef.current;
+      const aiError = normalizeAiError(error, {
+        stage: currentAiState?.stage ?? "reasoning",
+        timing: finalTiming,
+        metrics,
+        generatedPartial: Boolean(partialContent),
+        partialContent,
+        stream: true,
+        appVersion,
+        platform: navigator.userAgent,
+      });
+      const errorMessage = aiError.message;
+      updateAiRequestState({
+        status:
+          aiError.errorCode === "USER_CANCELLED"
+            ? "cancelled"
+            : aiError.errorCode === "MODEL_TIMEOUT"
+              ? "timeout"
+              : "failed",
+        stage: aiError.stage ?? currentAiState?.stage ?? "reasoning",
+        error: aiError,
+        timing: finalTiming,
+        metrics,
+        partialContent,
+        generatedPartial: Boolean(partialContent),
+        retryable: aiError.retryable,
+      });
       setComposerText(nextMessage);
       if (targetSessionId) {
-        const failedMessage = createLocalFailedMessage(targetSessionId, errorMessage);
+        const failedMessage = createLocalFailedMessage(
+          targetSessionId,
+          errorMessage,
+          aiError,
+          partialContent,
+          metrics,
+        );
         pendingLocalFailedMessageRef.current = {
           userMessage: optimisticUserMessage,
           failedMessage,
@@ -783,6 +1069,7 @@ function WorkspacePage({
       }
     } finally {
       setIsSending(false);
+      abortControllerRef.current = null;
       setStreamingText("");
       setStreamTools([]);
       setStreamStatus("");
@@ -884,6 +1171,7 @@ function WorkspacePage({
                     setStreamingText("");
                     setStreamTools([]);
                     setStreamStatus("");
+                    updateAiRequestState(null);
                     const snapshot = readWorkspaceSnapshot(user.id);
                     saveWorkspaceSnapshot(user.id, {
                       ...snapshot,
@@ -993,11 +1281,15 @@ function WorkspacePage({
                       onCopyContent={handleCopyContent}
                       onCopyQuestion={handleCopyQuestion}
                       onEditQuestion={handleEditQuestion}
+                      onShowNotice={setNotice}
                     />
                   ))}
                   {isSending || streamingText || streamTools.length > 0 ? (
                     <StreamingMessage
+                      aiRequestState={aiRequestState}
                       content={streamingText}
+                      elapsedMs={requestElapsedMs}
+                      onCancel={handleCancelGeneration}
                       onCopyContent={handleCopyContent}
                       statusLabel={streamStatus}
                       tools={streamTools}
@@ -1007,7 +1299,10 @@ function WorkspacePage({
               ) : activeProject && hasConversationContent ? (
                 <div className="local-message-list">
                   <StreamingMessage
+                    aiRequestState={aiRequestState}
                     content={streamingText}
+                    elapsedMs={requestElapsedMs}
+                    onCancel={handleCancelGeneration}
                     onCopyContent={handleCopyContent}
                     statusLabel={streamStatus}
                     tools={streamTools}
@@ -1206,6 +1501,65 @@ function getToolCategory(name: string): ToolCategory {
   return "tool";
 }
 
+function normalizeAiStage(value: unknown): AiRequestStage | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const stages: AiRequestStage[] = [
+    "preparing",
+    "connecting",
+    "queued",
+    "reasoning",
+    "streaming",
+    "tool_calling",
+    "saving",
+    "done",
+  ];
+  return stages.includes(value as AiRequestStage) ? (value as AiRequestStage) : null;
+}
+
+function formatAiActionLabel(action: AiErrorAction, errorCode: string) {
+  if (action === "retry_connection") {
+    return "重试连接";
+  }
+  if (action === "retry") {
+    if (errorCode === "TOOL_CALL_FAILED") {
+      return "重新执行";
+    }
+    if (errorCode === "MODEL_BUSY") {
+      return "稍后重试";
+    }
+    return "重新生成";
+  }
+  const labels: Record<Exclude<AiErrorAction, "retry_connection" | "retry">, string> = {
+    switch_model: "切换模型",
+    open_settings: "去配置",
+    shorten_input: "缩短输入",
+    cancel: "停止生成",
+    copy_error: "复制错误",
+    copy_diagnostic: "复制诊断",
+    copy_partial_content: "复制已生成内容",
+    view_detail: "查看详情",
+  };
+  return labels[action];
+}
+
+function resolveAiActionFallback(action: AiErrorAction) {
+  const messages: Record<AiErrorAction, string> = {
+    retry: "请确认输入内容后重新发送",
+    retry_connection: "请确认输入内容后重新发送",
+    switch_model: "模型切换入口待接入",
+    open_settings: "配置入口待接入",
+    shorten_input: "请缩短输入内容后重新发送",
+    cancel: "任务停止入口待接入",
+    copy_error: "错误信息已复制",
+    copy_diagnostic: "诊断详情已复制",
+    copy_partial_content: "已生成内容已复制",
+    view_detail: "详情已展开",
+  };
+  return messages[action];
+}
+
 function normalizeToolSummary(items: Record<string, unknown>[]): ToolStatus[] {
   const ordered: ToolStatus[] = [];
   const byId = new Map<string, ToolStatus>();
@@ -1256,27 +1610,35 @@ function MessageBubble({
   onCopyContent,
   onCopyQuestion,
   onEditQuestion,
+  onShowNotice,
 }: {
   message: SessionMessage;
   onCopyContent: CopyContentHandler;
   onCopyQuestion: (content: string) => void;
   onEditQuestion: (content: string) => void;
+  onShowNotice: (content: string) => void;
 }) {
   const isAssistant = message.role === "assistant";
   const toolItems = normalizeToolSummary(message.tool_summary);
   const displayContent = normalizeMessageContent(message.content);
+  const aiError =
+    message.status === "failed"
+      ? (message.ai_error ?? normalizeAiError({ message: displayContent, stage: "reasoning" }))
+      : undefined;
   return (
     <div className={isAssistant ? "message-bubble assistant" : "message-bubble user"}>
       {isAssistant ? (
         <>
           {message.status === "failed" ? (
-            <div className="message-error-row">
-              <p className="message-error-text">{displayContent}</p>
-              <CopyButton
-                label="复制错误"
-                onClick={() => copyAssistantContent(onCopyContent, displayContent, "错误详情")}
-              />
-            </div>
+            <AiErrorCard
+              error={aiError}
+              generatedPartial={message.generated_partial}
+              metrics={message.ai_metrics}
+              onActionNotice={onShowNotice}
+              onCopyContent={onCopyContent}
+              onRetry={() => onShowNotice("请确认输入内容后重新发送")}
+              partialContent={message.partial_content}
+            />
           ) : null}
           {message.status === "failed" ? null : (
             <ProcessSummary
@@ -1311,6 +1673,117 @@ function normalizeMessageContent(content: string) {
     return "上次推理已中断，请重新发送。";
   }
   return content;
+}
+
+function AiErrorCard({
+  error,
+  generatedPartial,
+  metrics,
+  onActionNotice,
+  onCopyContent,
+  onRetry,
+  partialContent,
+}: {
+  error?: AiRequestError;
+  generatedPartial?: boolean;
+  metrics?: AiDurationMetrics;
+  onActionNotice: (content: string) => void;
+  onCopyContent: CopyContentHandler;
+  onRetry?: () => void;
+  partialContent?: string;
+}) {
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const resolvedError = error ?? normalizeAiError("推理失败，请稍后重试");
+  const actions = resolveAiErrorActions(resolvedError);
+  const context = {
+    generatedPartial: Boolean(generatedPartial && partialContent),
+    partialContent: partialContent ?? "",
+    stream: true,
+    appVersion,
+    platform: navigator.userAgent,
+  };
+
+  const runAction = (action: AiErrorAction) => {
+    if (action === "copy_error") {
+      copyAssistantContent(
+        onCopyContent,
+        buildAiErrorSummaryText(resolvedError),
+        "错误信息",
+      );
+      return;
+    }
+    if (action === "copy_diagnostic") {
+      copyAssistantContent(
+        onCopyContent,
+        buildAiDiagnosticText({ error: resolvedError, metrics, context }),
+        "诊断详情",
+      );
+      return;
+    }
+    if (action === "copy_partial_content" && partialContent) {
+      copyAssistantContent(onCopyContent, partialContent, "已生成内容");
+      return;
+    }
+    if (action === "copy_partial_content") {
+      onActionNotice("暂无已生成内容可复制");
+      return;
+    }
+    if (action === "view_detail") {
+      setIsDetailOpen((value) => !value);
+      return;
+    }
+    if ((action === "retry" || action === "retry_connection") && onRetry) {
+      onRetry();
+      return;
+    }
+    onActionNotice(resolveAiActionFallback(action));
+  };
+
+  return (
+    <section
+      className={
+        resolvedError.errorCode === "USER_CANCELLED" ? "ai-error-card neutral" : "ai-error-card"
+      }
+      aria-label="AI 异常提示"
+    >
+      <header>
+        <div>
+          <strong>{resolvedError.title}</strong>
+          <p>{resolvedError.message}</p>
+        </div>
+        {resolvedError.durationMs !== undefined ? (
+          <span>{formatAiDuration(resolvedError.durationMs)}</span>
+        ) : null}
+      </header>
+
+      {generatedPartial && partialContent ? (
+        <p className="ai-partial-notice">连接中断，以下内容可能不完整。</p>
+      ) : null}
+
+      {generatedPartial && partialContent ? (
+        <div className="ai-partial-content">
+          <AssistantContent content={partialContent} onCopyContent={onCopyContent} />
+        </div>
+      ) : null}
+
+      <div className="ai-error-actions">
+        {actions.map((action) => (
+          <button key={action} type="button" onClick={() => runAction(action)}>
+            {formatAiActionLabel(action, resolvedError.errorCode)}
+          </button>
+        ))}
+        <button type="button" onClick={() => runAction("copy_diagnostic")}>
+          复制诊断
+        </button>
+      </div>
+
+      {isDetailOpen ? (
+        <pre className="ai-error-detail">
+          {buildAiDiagnosticText({ error: resolvedError, metrics, context })}
+        </pre>
+      ) : null}
+    </section>
+  );
 }
 
 function UserQuestionMessage({
@@ -1353,26 +1826,52 @@ function UserQuestionMessage({
 }
 
 function StreamingMessage({
+  aiRequestState,
   content,
+  elapsedMs,
+  onCancel,
   onCopyContent,
   statusLabel,
   tools,
 }: {
+  aiRequestState: AiRequestState | null;
   content: string;
+  elapsedMs: number;
+  onCancel: () => void;
   onCopyContent: CopyContentHandler;
   statusLabel: string;
   tools: ToolStatus[];
 }) {
+  const stage = aiRequestState?.stage ?? "connecting";
+  const durationLabel = formatAiDuration(elapsedMs);
+  const isSlow = elapsedMs >= AI_TIMEOUT_CONFIG.chat.slowHintMs;
+  const isLongSlow = elapsedMs >= AI_TIMEOUT_CONFIG.chat.longSlowHintMs;
+  const currentStatus =
+    statusLabel || (stage === "connecting" ? "正在连接 AI 服务" : formatAiStage(stage));
   return (
     <div className="message-bubble assistant streaming">
       <ProcessSummary
         copyContent={content}
         copyLabel="回复正文"
         onCopyContent={content ? onCopyContent : undefined}
-        statusLabel={statusLabel || "思考中"}
+        statusLabel={`${currentStatus} · 已耗时 ${durationLabel}`}
         state="running"
         toolCount={tools.length}
       />
+      {isSlow ? (
+        <AiSlowHint
+          durationLabel={durationLabel}
+          isLongSlow={isLongSlow}
+          stage={stage}
+          onCancel={onCancel}
+        />
+      ) : (
+        <AiLoadingIndicator
+          durationLabel={durationLabel}
+          stage={stage}
+          onCancel={onCancel}
+        />
+      )}
       {tools.length > 0 ? <ToolStepList onCopyContent={onCopyContent} tools={tools} /> : null}
       {!content && tools.length === 0 ? (
         <p className="stream-hint">
@@ -1380,6 +1879,52 @@ function StreamingMessage({
         </p>
       ) : null}
       {content ? <AssistantContent content={content} onCopyContent={onCopyContent} /> : null}
+    </div>
+  );
+}
+
+function AiLoadingIndicator({
+  durationLabel,
+  onCancel,
+  stage,
+}: {
+  durationLabel: string;
+  onCancel: () => void;
+  stage: AiRequestStage;
+}) {
+  return (
+    <div className="ai-status-hint">
+      <span>{formatAiStage(stage)}</span>
+      <span>已耗时 {durationLabel}</span>
+      <button type="button" onClick={onCancel}>
+        停止生成
+      </button>
+    </div>
+  );
+}
+
+function AiSlowHint({
+  durationLabel,
+  isLongSlow,
+  onCancel,
+  stage,
+}: {
+  durationLabel: string;
+  isLongSlow: boolean;
+  onCancel: () => void;
+  stage: AiRequestStage;
+}) {
+  return (
+    <div className="ai-slow-hint">
+      <div>
+        <strong>{isLongSlow ? "AI 正在处理中，耗时较长" : "AI 正在思考..."}</strong>
+        <p>
+          当前阶段：{formatAiStage(stage)}，已耗时 {durationLabel}。
+        </p>
+      </div>
+      <button type="button" onClick={onCancel}>
+        停止生成
+      </button>
     </div>
   );
 }

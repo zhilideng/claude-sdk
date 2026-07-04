@@ -622,6 +622,88 @@ button {
   line-height: 1.5;
 }
 
+.ai-error-card {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 820px);
+  margin: 2px 0 22px;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--color-border-light);
+  color: var(--color-text);
+}
+
+.ai-error-card.neutral {
+  color: var(--color-text-muted);
+}
+
+.ai-error-card header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ai-error-card header strong {
+  margin: 0 0 4px;
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.ai-error-card header p,
+.ai-partial-notice {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.ai-error-card header span {
+  flex: 0 0 auto;
+  color: var(--color-text-subtle);
+  font-size: 12px;
+}
+
+.ai-partial-content {
+  padding-left: 12px;
+  border-left: 2px solid var(--color-border);
+}
+
+.ai-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-error-actions button,
+.ai-status-hint button,
+.ai-slow-hint button {
+  min-height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+  cursor: pointer;
+}
+
+.ai-error-actions button {
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.ai-error-detail {
+  width: min(100%, 760px);
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .verification-block {
   margin: 26px 0;
 }
@@ -1244,6 +1326,52 @@ button {
   color: var(--color-text-muted);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.ai-status-hint,
+.ai-slow-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: min(100%, 760px);
+  margin: -18px 0 20px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ai-status-hint {
+  flex-wrap: wrap;
+}
+
+.ai-status-hint span {
+  display: inline-flex;
+}
+
+.ai-slow-hint {
+  padding: 12px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.ai-slow-hint strong {
+  margin: 0 0 2px;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.ai-slow-hint p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.ai-status-hint button,
+.ai-slow-hint button {
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .tool-step-list {
