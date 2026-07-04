@@ -8,8 +8,8 @@ from app.repositories.base import Base
 class Project(Base):
     """本地项目 ORM 模型。
 
-    Web 选择文件夹时浏览器不会暴露绝对路径，因此 ``root_path`` 只作为未来
-    桌面壳或后端桥接目录选择后的可选字段；不在项目表保存文件清单。
+    ``root_path`` 表示 Claude Code SDK 的项目 cwd，必须是用户选择的真实目录。
+    服务端临时工作区路径只作为历史兼容识别，禁止作为 cwd 执行。
     """
 
     __tablename__ = "project"

@@ -11,6 +11,7 @@ httpx>=0.27  # FastAPI TestClient 端到端测试所需
 fastapi>=0.110
 uvicorn[standard]>=0.27
 loguru>=0.7
+python-multipart>=0.0.9  # FastAPI UploadFile/Form 文件夹上传接口
 
 # 数据层依赖（SQLAlchemy 异步 + PostgreSQL async 驱动）
 sqlalchemy[asyncio]>=2.0

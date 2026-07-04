@@ -23,7 +23,11 @@ def resolve_project_path(input_path: str) -> Path:
     if not raw_path:
         raise BizValidationError("本地路径不能为空")
 
-    path = Path(raw_path).expanduser().resolve()
+    path_input = Path(raw_path).expanduser()
+    if not path_input.is_absolute():
+        raise BizValidationError("本地路径必须是绝对路径")
+
+    path = path_input.resolve()
     if not path.exists():
         raise BizValidationError("本地路径不存在")
     if not path.is_dir():

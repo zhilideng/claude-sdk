@@ -242,6 +242,7 @@ class ProjectSettings(BaseModel):
     allowed_roots: list[str] = Field(
         default_factory=lambda: ["/Users/zhili.deng/dzl-py"]
     )  # 允许导入的本地根目录列表；生产或多人环境必须显式收敛
+    workspace_root: str = ".runtime/project-workspaces"  # 历史临时工作区根目录；命中该目录时禁止作为项目 cwd
     max_scan_files: int = Field(default=2000, gt=0)  # 预留：未来按需工具读取时的扫描上限
     max_sample_files: int = Field(default=20, gt=0)  # 预留：未来按需工具读取时的样例上限
     command_timeout: int = Field(default=300, gt=0)  # Claude Code SDK 单次执行超时秒数
@@ -258,7 +259,8 @@ class ClaudeAgentSettings(BaseModel):
     permission_mode: str = "bypassPermissions"  # 全能力开放：绕过工具审批
     include_partial_messages: bool = True  # 开启 StreamEvent 增量输出
     command_timeout: int = Field(default=300, gt=0)  # 单次 agent 执行超时秒数
-    default_cwd: str = "."  # root_path 为空时的安全默认工作目录
+    startup_timeout: int = Field(default=15, gt=0)  # 等待 SDK 首个事件的超时秒数，避免本地连接失败时长时间卡住
+    default_cwd: str = "."  # 兼容旧配置；项目执行必须使用 Project.root_path，不再回退默认 cwd
     strict_mcp_config: bool = False  # false=允许合并项目/用户/插件 MCP 配置
     mcp_servers: dict[str, dict] = Field(default_factory=dict)  # 传给 SDK 的 MCP server 配置
 

@@ -7,15 +7,24 @@ from pydantic import BaseModel, ConfigDict, Field
 class ProjectImportIn(BaseModel):
     """导入本地目录项目请求体。
 
-    浏览器目录选择不会暴露 macOS 绝对路径，前端只提交目录名作为项目名。
+    JSON 入口保留给受信任桌面桥接；必须传入真实本地绝对路径，禁止用
+    服务端临时目录代替用户选择的文件夹。
     """
 
     user_id: int = Field(..., ge=1, description="当前用户 id")
     directory_name: str = Field(..., min_length=1, max_length=255, description="本地目录名")
+    root_path: str | None = Field(None, min_length=1, max_length=2048, description="本地绝对路径")
 
 
 class ProjectCreateIn(ProjectImportIn):
     """创建本地项目请求体。"""
+
+
+class LocalDirectoryPickData(BaseModel):
+    """本机目录选择结果。"""
+
+    name: str
+    path: str
 
 
 class ProjectScanData(BaseModel):

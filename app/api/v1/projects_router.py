@@ -1,15 +1,19 @@
 """项目相关 API 路由（v1）。"""
+import asyncio
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.exceptions import BizValidationError
 from app.schemas.project import (
     ProjectCreateIn,
     ProjectImportIn,
     ProjectSessionCreateIn,
 )
 from app.services import ProjectService
+from app.utils.local_directory_picker import pick_local_directory
 from app.utils.common import ApiResponse
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -45,6 +49,22 @@ async def import_local_path(
     """导入浏览器选择的本地目录作为项目。"""
     service = ProjectService(db, get_settings().projects)
     data = await service.import_local_path(payload)
+    return ApiResponse.ok(data).to_payload()
+
+
+@router.post("/import-folder")
+async def import_folder(
+) -> dict:
+    """拒绝浏览器文件夹上传导入，避免把服务端临时目录误当项目 cwd。"""
+    raise BizValidationError(
+        "当前导入方式无法获取本地文件夹真实路径，请使用桌面目录选择桥接重新导入"
+    )
+
+
+@router.post("/pick-local-directory")
+async def pick_local_directory_path() -> dict:
+    """由后端本机弹出目录选择器，返回真实绝对路径。"""
+    data = await asyncio.to_thread(pick_local_directory)
     return ApiResponse.ok(data).to_payload()
 
 

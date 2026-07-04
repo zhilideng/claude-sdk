@@ -66,6 +66,7 @@ projects:
   # 生产必须经 PROJECTS__ALLOWED_ROOTS 覆盖为真实受控目录，禁止放开到系统根目录。
   allowed_roots:
     - /workspace
+  workspace_root: /workspace/.runtime/project-workspaces
   max_scan_files: 2000
   max_sample_files: 20
   command_timeout: 300
@@ -75,6 +76,7 @@ claude_agent:
   permission_mode: bypassPermissions
   include_partial_messages: true
   command_timeout: 300
+  startup_timeout: 15
   default_cwd: /workspace
   strict_mcp_config: false
   mcp_servers: {}
