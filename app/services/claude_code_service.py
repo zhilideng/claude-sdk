@@ -44,7 +44,7 @@ class ClaudeCodeService:
     ) -> AsyncIterator[ClaudeCodeStreamEvent]:
         """流式运行一次 agent 会话请求。"""
         if not self._settings.enabled:
-            raise BizValidationError("Claude Agent SDK 已禁用")
+            raise BizValidationError("推理服务已禁用")
 
         self._prepare_environment()
         resolved_cwd = self._resolve_cwd(cwd)
@@ -54,7 +54,7 @@ class ClaudeCodeService:
             from claude_agent_sdk import ClaudeAgentOptions, query
         except ImportError as exc:
             raise BizValidationError(
-                "缺少 claude-agent-sdk 依赖，请先安装后再调用真实 SDK"
+                "推理服务依赖未安装，请先安装依赖后再重试"
             ) from exc
 
         options = ClaudeAgentOptions(
@@ -71,34 +71,57 @@ class ClaudeCodeService:
         current_tool: dict[str, Any] | None = None
         has_text_delta = False
 
-        async with asyncio.timeout(self._settings.command_timeout):
-            async for message in query(prompt=formatted_prompt, options=options):
-                class_name = message.__class__.__name__
-                if class_name == "StreamEvent":
-                    async for event in self._stream_event_to_sse(message, current_tool):
-                        if event.type == "assistant_delta":
-                            has_text_delta = True
-                        if event.type == "tool_start":
-                            current_tool = event.data
-                        if event.type == "tool_done":
-                            current_tool = None
-                        yield event
-                    continue
+        async def emit_sdk_message(message: Any) -> AsyncIterator[ClaudeCodeStreamEvent]:
+            """转换单个 SDK 消息，并维护当前工具与文本状态。"""
+            nonlocal current_tool, has_text_delta
+            class_name = message.__class__.__name__
+            if class_name == "StreamEvent":
+                async for event in self._stream_event_to_sse(message, current_tool):
+                    if event.type == "assistant_delta":
+                        has_text_delta = True
+                    if event.type == "tool_start":
+                        current_tool = event.data
+                    if event.type == "tool_done":
+                        current_tool = None
+                    yield event
+                return
 
-                if class_name == "AssistantMessage" and not has_text_delta:
-                    content = self._extract_assistant_text(message)
-                    if content:
-                        yield ClaudeCodeStreamEvent(
-                            type="assistant_delta",
-                            data={"content": content},
-                        )
-                    continue
-
-                if class_name == "ResultMessage":
+            if class_name == "AssistantMessage" and not has_text_delta:
+                content = self._extract_assistant_text(message)
+                if content:
                     yield ClaudeCodeStreamEvent(
-                        type="sdk_result",
-                        data=self._result_message_to_data(message),
+                        type="assistant_delta",
+                        data={"content": content},
                     )
+                return
+
+            if class_name == "ResultMessage":
+                yield ClaudeCodeStreamEvent(
+                    type="sdk_result",
+                    data=self._result_message_to_data(message),
+                )
+
+        message_stream = aiter(query(prompt=formatted_prompt, options=options))
+        async with asyncio.timeout(self._settings.command_timeout):
+            try:
+                first_message = await asyncio.wait_for(
+                    anext(message_stream),
+                    timeout=self._settings.startup_timeout,
+                )
+            except TimeoutError as exc:
+                raise BizValidationError(
+                    f"推理连接超时（{self._settings.startup_timeout} 秒内未收到首个事件），"
+                    "请确认本地模型登录状态后重试。"
+                ) from exc
+            except StopAsyncIteration:
+                return
+
+            async for event in emit_sdk_message(first_message):
+                yield event
+
+            async for message in message_stream:
+                async for event in emit_sdk_message(message):
+                    yield event
 
     async def run_session(
         self,
@@ -124,7 +147,7 @@ class ClaudeCodeService:
             elif event.type == "sdk_result":
                 diff_summary.append(event.data)
 
-        content = "".join(content_parts).strip() or "Claude Agent SDK 执行完成，但没有返回文本内容。"
+        content = "".join(content_parts).strip() or "推理完成，但没有返回文本内容。"
         return ClaudeCodeRunResult(
             content=content,
             tool_summary=tool_summary,
@@ -202,7 +225,9 @@ class ClaudeCodeService:
 
     def _resolve_cwd(self, cwd: str | None) -> str:
         """解析 SDK 工作目录。"""
-        return cwd or self._settings.default_cwd
+        if not cwd:
+            raise BizValidationError("项目未绑定本地目录，请重新选择真实项目目录")
+        return cwd
 
     @staticmethod
     def _format_prompt(prompt: str, session_history: list[SessionMessageOut]) -> str:
