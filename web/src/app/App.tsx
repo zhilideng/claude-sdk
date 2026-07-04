@@ -1,4 +1,12 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  KeyboardEvent,
+  RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 type AuthMode = "login" | "register";
 
@@ -52,6 +60,12 @@ type ProjectImportData = {
   default_session: ProjectSession;
 };
 
+type WorkspaceSnapshot = {
+  activeProjectId: number | null;
+  activeSessionId: number | null;
+  projectPaths: Record<string, string>;
+};
+
 type SessionMessage = {
   id: number;
   session_id: number;
@@ -86,8 +100,58 @@ type ToolStatus = {
 
 type ToolCategory = "thinking" | "terminal" | "file" | "search" | "mcp" | "tool";
 
+type AssistantContentBlock =
+  | {
+      type: "text";
+      content: string;
+    }
+  | {
+      type: "code";
+      language: string;
+      content: string;
+    };
+
+type TextLineBlock =
+  | {
+      type: "paragraph";
+      content: string;
+    }
+  | {
+      type: "heading";
+      level: number;
+      content: string;
+    }
+  | {
+      type: "quote";
+      content: string;
+    }
+  | {
+      type: "list";
+      ordered: boolean;
+      checklist: boolean;
+      items: TextListItem[];
+    }
+  | {
+      type: "table";
+      headers: string[];
+      rows: string[][];
+    }
+  | {
+      type: "workflow";
+      title: string;
+      items: TextListItem[];
+    };
+
+type TextListItem = {
+  content: string;
+  checked?: boolean;
+};
+
+type CopyContentHandler = (content: string, label: string) => void;
+
 type CreateProjectForm = {
   directoryName: string;
+  rootPath: string;
 };
 
 const initialForm: FormState = {
@@ -96,6 +160,117 @@ const initialForm: FormState = {
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
+
+function getWorkspaceSnapshotKey(userId: number) {
+  return `claude-sdk.workspace.${userId}`;
+}
+
+function createEmptyWorkspaceSnapshot(): WorkspaceSnapshot {
+  return {
+    activeProjectId: null,
+    activeSessionId: null,
+    projectPaths: {},
+  };
+}
+
+function readWorkspaceSnapshot(userId: number): WorkspaceSnapshot {
+  try {
+    const raw = window.localStorage.getItem(getWorkspaceSnapshotKey(userId));
+    if (!raw) {
+      return createEmptyWorkspaceSnapshot();
+    }
+    const parsed = JSON.parse(raw) as Partial<WorkspaceSnapshot>;
+    return {
+      activeProjectId:
+        typeof parsed.activeProjectId === "number" ? parsed.activeProjectId : null,
+      activeSessionId:
+        typeof parsed.activeSessionId === "number" ? parsed.activeSessionId : null,
+      projectPaths:
+        parsed.projectPaths && typeof parsed.projectPaths === "object"
+          ? Object.fromEntries(
+              Object.entries(parsed.projectPaths).filter(
+                (item): item is [string, string] => typeof item[1] === "string",
+              ),
+            )
+          : {},
+    };
+  } catch {
+    return createEmptyWorkspaceSnapshot();
+  }
+}
+
+function saveWorkspaceSnapshot(userId: number, snapshot: WorkspaceSnapshot) {
+  try {
+    window.localStorage.setItem(getWorkspaceSnapshotKey(userId), JSON.stringify(snapshot));
+  } catch {
+    // localStorage 可能因隐私模式或配额失败；不阻断主流程。
+  }
+}
+
+function collectProjectPaths(
+  projects: Project[],
+  previousPaths: Record<string, string> = {},
+) {
+  const nextPaths = { ...previousPaths };
+  projects.forEach((project) => {
+    const path = project.root_path ?? project.display_path;
+    if (path) {
+      nextPaths[String(project.id)] = path;
+    }
+  });
+  return nextPaths;
+}
+
+function summarizeSessionTitle(content: string) {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  const firstSentence = normalized.split(/[。！？!?]/)[0]?.trim() || normalized;
+  const title = firstSentence || "新会话";
+  return title.length > 32 ? `${title.slice(0, 32)}...` : title;
+}
+
+function createLocalFailedMessage(sessionId: number, content: string): SessionMessage {
+  return {
+    id: -Date.now() - 1,
+    session_id: sessionId,
+    role: "assistant",
+    content,
+    status: "failed",
+    tool_summary: [],
+    diff_summary: [],
+    created_at: new Date().toISOString(),
+  };
+}
+
+function mergeLocalFailedMessage(
+  items: SessionMessage[],
+  userMessage: SessionMessage | null,
+  failedMessage: SessionMessage,
+) {
+  const nextItems = [...items];
+  if (
+    userMessage &&
+    !nextItems.some(
+      (item) =>
+        item.session_id === userMessage.session_id &&
+        item.role === "user" &&
+        item.content === userMessage.content,
+    )
+  ) {
+    nextItems.push(userMessage);
+  }
+  if (
+    !nextItems.some(
+      (item) =>
+        item.session_id === failedMessage.session_id &&
+        item.role === "assistant" &&
+        item.status === "failed" &&
+        item.content === failedMessage.content,
+    )
+  ) {
+    nextItems.push(failedMessage);
+  }
+  return nextItems;
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -127,6 +302,12 @@ async function requestProjects(userId: number): Promise<ProjectListData> {
   return requestJson<ProjectListData>(`/v1/projects?user_id=${userId}`);
 }
 
+async function requestPickLocalDirectory(): Promise<PickedDirectory> {
+  return requestJson<PickedDirectory>("/v1/projects/pick-local-directory", {
+    method: "POST",
+  });
+}
+
 async function requestImportProject(
   userId: number,
   form: CreateProjectForm,
@@ -136,6 +317,7 @@ async function requestImportProject(
     body: JSON.stringify({
       user_id: userId,
       directory_name: form.directoryName.trim(),
+      root_path: form.rootPath.trim(),
     }),
   });
 }
@@ -143,10 +325,11 @@ async function requestImportProject(
 async function requestCreateSession(
   userId: number,
   projectId: number,
+  title = "新会话",
 ): Promise<ProjectSession> {
   return requestJson<ProjectSession>(`/v1/projects/${projectId}/sessions`, {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, title: "新会话" }),
+    body: JSON.stringify({ user_id: userId, title }),
   });
 }
 
@@ -171,6 +354,9 @@ async function requestSendMessageStream(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ user_id: userId, content }),
+  }).catch((error) => {
+    const detail = error instanceof Error && error.message ? `：${error.message}` : "";
+    throw new Error(`推理连接中断，请检查后端服务状态${detail}`);
   });
 
   if (!response.ok) {
@@ -203,7 +389,7 @@ async function requestSendMessageStream(
       onEvent(event);
       if (event.type === "agent_error") {
         const message = event.data.message;
-        throw new Error(typeof message === "string" ? message : "Claude Agent SDK 调用失败");
+        throw new Error(typeof message === "string" ? message : "推理失败，请稍后重试");
       }
     }
 
@@ -350,12 +536,20 @@ function WorkspacePage({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isSending, setIsSending] = useState(false);
+  const [isDraftSession, setIsDraftSession] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [streamTools, setStreamTools] = useState<ToolStatus[]>([]);
+  const [streamStatus, setStreamStatus] = useState("");
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingLocalFailedMessageRef = useRef<{
+    userMessage: SessionMessage | null;
+    failedMessage: SessionMessage;
+  } | null>(null);
 
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === activeSessionId) ?? null;
+  const canCompose = Boolean(activeSession || (activeProject && isDraftSession));
   const hasConversationContent =
     messages.length > 0 || isSending || Boolean(streamingText) || streamTools.length > 0;
 
@@ -363,17 +557,29 @@ function WorkspacePage({
     setIsLoadingProjects(true);
     try {
       const data = await requestProjects(user.id);
+      const snapshot = readWorkspaceSnapshot(user.id);
       setProjects(data.items);
+      const preferredProjectId = preferredSessionId ? null : snapshot.activeProjectId;
+      const preferredSnapshotSessionId = preferredSessionId ?? snapshot.activeSessionId ?? undefined;
       const nextProject =
         data.items.find((project) =>
-          project.sessions.some((session) => session.id === preferredSessionId),
-        ) ?? data.items[0] ?? null;
+          project.sessions.some((session) => session.id === preferredSnapshotSessionId),
+        ) ??
+        data.items.find((project) => project.id === preferredProjectId) ??
+        data.items[0] ??
+        null;
       const nextSession =
-        nextProject?.sessions.find((session) => session.id === preferredSessionId) ??
+        nextProject?.sessions.find((session) => session.id === preferredSnapshotSessionId) ??
         nextProject?.sessions[0] ??
         null;
       setActiveProjectId(nextProject?.id ?? null);
       setActiveSessionId(nextSession?.id ?? null);
+      setIsDraftSession(false);
+      saveWorkspaceSnapshot(user.id, {
+        activeProjectId: nextProject?.id ?? null,
+        activeSessionId: nextSession?.id ?? null,
+        projectPaths: collectProjectPaths(data.items, snapshot.projectPaths),
+      });
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "项目加载失败");
     } finally {
@@ -392,10 +598,16 @@ function WorkspacePage({
     }
     setStreamingText("");
     setStreamTools([]);
+    setStreamStatus("");
     const loadMessages = async () => {
       try {
         const data = await requestMessages(user.id, activeSessionId);
-        setMessages(data.items);
+        const pending = pendingLocalFailedMessageRef.current;
+        setMessages(
+          pending && pending.failedMessage.session_id === activeSessionId
+            ? mergeLocalFailedMessage(data.items, pending.userMessage, pending.failedMessage)
+            : data.items,
+        );
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "消息加载失败");
       }
@@ -406,15 +618,34 @@ function WorkspacePage({
   const handleSelectSession = (projectId: number, sessionId: number) => {
     setActiveProjectId(projectId);
     setActiveSessionId(sessionId);
+    const snapshot = readWorkspaceSnapshot(user.id);
+    saveWorkspaceSnapshot(user.id, {
+      ...snapshot,
+      activeProjectId: projectId,
+      activeSessionId: sessionId,
+      projectPaths: collectProjectPaths(projects, snapshot.projectPaths),
+    });
     setNotice("");
     setIsMobileSidebarOpen(false);
+    setIsDraftSession(false);
+    pendingLocalFailedMessageRef.current = null;
     setStreamingText("");
     setStreamTools([]);
+    setStreamStatus("");
   };
 
   const handleCreateProject = async (form: CreateProjectForm) => {
     const data = await requestImportProject(user.id, form);
+    saveWorkspaceSnapshot(user.id, {
+      activeProjectId: data.project.id,
+      activeSessionId: data.default_session.id,
+      projectPaths: collectProjectPaths(
+        [data.project],
+        readWorkspaceSnapshot(user.id).projectPaths,
+      ),
+    });
     setIsCreateModalOpen(false);
+    setIsDraftSession(false);
     setNotice("");
     await loadProjects(data.default_session.id);
   };
@@ -424,19 +655,22 @@ function WorkspacePage({
       setIsCreateModalOpen(true);
       return;
     }
-    try {
-      const session = await requestCreateSession(user.id, activeProjectId);
-      await loadProjects(session.id);
-      setNotice("已创建新会话");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "会话创建失败");
-    }
+    setActiveSessionId(null);
+    setMessages([]);
+    setComposerText("");
+    setNotice("");
+    setIsDraftSession(true);
+    pendingLocalFailedMessageRef.current = null;
+    setStreamingText("");
+    setStreamTools([]);
+    setStreamStatus("");
+    setIsMobileSidebarOpen(false);
   };
 
   const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const nextMessage = composerText.trim();
-    if (!nextMessage || !activeSessionId || isSending) {
+    if (!nextMessage || isSending || (!activeSessionId && !activeProjectId)) {
       return;
     }
 
@@ -444,11 +678,25 @@ function WorkspacePage({
     setNotice("");
     setStreamingText("");
     setStreamTools([]);
+    setStreamStatus("思考中");
+    let targetSessionId = activeSessionId;
+    let optimisticUserMessage: SessionMessage | null = null;
     try {
+      if (!targetSessionId) {
+        if (!activeProjectId) {
+          return;
+        }
+        const session = await requestCreateSession(
+          user.id,
+          activeProjectId,
+          summarizeSessionTitle(nextMessage),
+        );
+        targetSessionId = session.id;
+      }
       setComposerText("");
-      const optimisticUserMessage: SessionMessage = {
+      const optimisticMessage: SessionMessage = {
         id: -Date.now(),
-        session_id: activeSessionId,
+        session_id: targetSessionId,
         role: "user",
         content: nextMessage,
         status: "done",
@@ -456,16 +704,22 @@ function WorkspacePage({
         diff_summary: [],
         created_at: new Date().toISOString(),
       };
-      setMessages((items) => [...items, optimisticUserMessage]);
+      optimisticUserMessage = optimisticMessage;
+      setMessages((items) => [...items, optimisticMessage]);
 
-      await requestSendMessageStream(user.id, activeSessionId, nextMessage, (event) => {
+      await requestSendMessageStream(user.id, targetSessionId, nextMessage, (event) => {
+        if (event.type === "agent_started") {
+          setStreamStatus("思考中");
+        }
         if (event.type === "assistant_delta") {
+          setStreamStatus("推理中");
           const content = event.data.content;
           if (typeof content === "string") {
             setStreamingText((value) => `${value}${content}`);
           }
         }
         if (event.type === "tool_start") {
+          setStreamStatus("推理中");
           const id = String(event.data.id ?? `${event.sequence}`);
           const name = String(event.data.name ?? "tool");
           setStreamTools((items) => [
@@ -490,25 +744,75 @@ function WorkspacePage({
             items.map((item) => (id && item.id === id ? { ...item, status: "done" } : item)),
           );
         }
+        if (event.type === "sdk_result" || event.type === "assistant_message_saved") {
+          setStreamStatus("整理中");
+        }
+        if (event.type === "agent_error") {
+          const message = event.data.message;
+          setStreamStatus(typeof message === "string" ? message : "推理失败");
+        }
       });
-      const data = await requestMessages(user.id, activeSessionId);
+      const data = await requestMessages(user.id, targetSessionId);
       setMessages(data.items);
       setStreamingText("");
       setStreamTools([]);
-      await loadProjects(activeSessionId);
+      setStreamStatus("");
+      setIsDraftSession(false);
+      pendingLocalFailedMessageRef.current = null;
+      await loadProjects(targetSessionId);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "消息发送失败");
+      const errorMessage = error instanceof Error ? error.message : "推理失败，请稍后重试";
       setComposerText(nextMessage);
-      try {
-        const data = await requestMessages(user.id, activeSessionId);
-        setMessages(data.items);
-      } catch {
-        setMessages((items) => items.filter((item) => item.id >= 0));
+      if (targetSessionId) {
+        const failedMessage = createLocalFailedMessage(targetSessionId, errorMessage);
+        pendingLocalFailedMessageRef.current = {
+          userMessage: optimisticUserMessage,
+          failedMessage,
+        };
+        try {
+          const data = await requestMessages(user.id, targetSessionId);
+          setMessages(mergeLocalFailedMessage(data.items, optimisticUserMessage, failedMessage));
+        } catch {
+          setMessages((items) =>
+            mergeLocalFailedMessage(items, optimisticUserMessage, failedMessage),
+          );
+        }
+        await loadProjects(targetSessionId);
+      } else {
+        setNotice(errorMessage);
       }
     } finally {
       setIsSending(false);
       setStreamingText("");
       setStreamTools([]);
+      setStreamStatus("");
+    }
+  };
+
+  const handleCopyQuestion = async (content: string) => {
+    try {
+      await copyText(content);
+      setNotice("问题已复制");
+    } catch {
+      setNotice("复制失败，请手动选择文本复制");
+    }
+  };
+
+  const handleEditQuestion = (content: string) => {
+    setComposerText(content);
+    setNotice("已将问题放回输入框");
+    window.setTimeout(() => {
+      composerTextareaRef.current?.focus();
+      composerTextareaRef.current?.setSelectionRange(content.length, content.length);
+    }, 0);
+  };
+
+  const handleCopyContent: CopyContentHandler = async (content, label) => {
+    try {
+      await copyText(redactSensitiveText(content));
+      setNotice(`已复制${label}`);
+    } catch {
+      setNotice("复制失败，请手动选择文本复制");
     }
   };
 
@@ -542,60 +846,75 @@ function WorkspacePage({
           </button>
         </nav>
 
-        <div className="project-list">
+        <section className="project-section" aria-label="项目列表">
           <div className="project-list-heading">
             <p className="sidebar-label">项目</p>
             <button
-              className="icon-button"
+              className="project-add-button"
               type="button"
               aria-label="创建项目"
               onClick={() => setIsCreateModalOpen(true)}
             >
-              ＋
+              新增项目
             </button>
           </div>
 
-          {isLoadingProjects ? <p className="sidebar-empty">项目加载中...</p> : null}
-          {!isLoadingProjects && projects.length === 0 ? (
-            <div className="sidebar-empty">
-              <p>还没有项目</p>
-              <button type="button" onClick={() => setIsCreateModalOpen(true)}>
-                创建项目
-              </button>
-            </div>
-          ) : null}
-
-          {projects.map((project) => (
-            <section className="project-group" key={project.id}>
-              <button
-                className="project-title-button"
-                type="button"
-                onClick={() => {
-                  setActiveProjectId(project.id);
-                  setActiveSessionId(project.sessions[0]?.id ?? null);
-                }}
-              >
-                <h2>{project.name}</h2>
-                <small>{project.is_git_repo ? "Git" : "本地"}</small>
-              </button>
-              <div className="thread-list">
-                {project.sessions.map((item) => (
-                  <button
-                    className={
-                      item.id === activeSessionId ? "thread-item active" : "thread-item"
-                    }
-                    key={item.id}
-                    type="button"
-                    onClick={() => handleSelectSession(project.id, item.id)}
-                  >
-                    <span>{item.title}</span>
-                    <small>{formatSessionTime(item.updated_at)}</small>
-                  </button>
-                ))}
+          <div className="project-list">
+            {isLoadingProjects ? <p className="sidebar-empty">项目加载中...</p> : null}
+            {!isLoadingProjects && projects.length === 0 ? (
+              <div className="sidebar-empty">
+                <p>还没有项目</p>
+                <button type="button" onClick={() => setIsCreateModalOpen(true)}>
+                  创建项目
+                </button>
               </div>
-            </section>
-          ))}
-        </div>
+            ) : null}
+
+            {projects.map((project) => (
+              <section className="project-group" key={project.id}>
+                <button
+                  className="project-title-button"
+                  type="button"
+                  onClick={() => {
+                    const nextSessionId = project.sessions[0]?.id ?? null;
+                    setActiveProjectId(project.id);
+                    setActiveSessionId(nextSessionId);
+                    setIsDraftSession(false);
+                    pendingLocalFailedMessageRef.current = null;
+                    setStreamingText("");
+                    setStreamTools([]);
+                    setStreamStatus("");
+                    const snapshot = readWorkspaceSnapshot(user.id);
+                    saveWorkspaceSnapshot(user.id, {
+                      ...snapshot,
+                      activeProjectId: project.id,
+                      activeSessionId: nextSessionId,
+                      projectPaths: collectProjectPaths(projects, snapshot.projectPaths),
+                    });
+                  }}
+                >
+                  <h2>{project.name}</h2>
+                  <small>{project.is_git_repo ? "Git" : "本地"}</small>
+                </button>
+                <div className="thread-list">
+                  {project.sessions.map((item) => (
+                    <button
+                      className={
+                        item.id === activeSessionId ? "thread-item active" : "thread-item"
+                      }
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleSelectSession(project.id, item.id)}
+                    >
+                      <span>{item.title}</span>
+                      <small>{formatSessionTime(item.updated_at)}</small>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        </section>
 
         <div className="sidebar-account">
           <div className="account-avatar">{getInitials(user.user_name)}</div>
@@ -618,7 +937,11 @@ function WorkspacePage({
               ☰
             </button>
             <span className="title-icon">▣</span>
-            <h1>{activeSession?.title ?? activeProject?.name ?? "项目工作台"}</h1>
+            <h1>
+              {activeSession?.title ??
+                (isDraftSession ? "新会话" : activeProject?.name) ??
+                "项目工作台"}
+            </h1>
             <button type="button" aria-label="创建项目" onClick={() => setIsCreateModalOpen(true)}>
               ···
             </button>
@@ -642,14 +965,16 @@ function WorkspacePage({
         </header>
 
         <div className="conversation-scroll">
-          {activeProject && activeSession && !hasConversationContent ? (
+          {activeProject && canCompose && !hasConversationContent ? (
             <EmptyProjectPrompt
               project={activeProject}
               activeSession={activeSession}
+              canCompose={canCompose}
               composerText={composerText}
               isSending={isSending}
               onChange={setComposerText}
               onSubmit={handleSendMessage}
+              textareaRef={composerTextareaRef}
               notice={notice}
               onModeClick={() => setNotice("审批模式待接入")}
             />
@@ -662,15 +987,31 @@ function WorkspacePage({
               {messages.length > 0 ? (
                 <div className="local-message-list">
                   {messages.map((item) => (
-                    <MessageBubble key={item.id} message={item} />
+                    <MessageBubble
+                      key={item.id}
+                      message={item}
+                      onCopyContent={handleCopyContent}
+                      onCopyQuestion={handleCopyQuestion}
+                      onEditQuestion={handleEditQuestion}
+                    />
                   ))}
                   {isSending || streamingText || streamTools.length > 0 ? (
-                    <StreamingMessage content={streamingText} tools={streamTools} />
+                    <StreamingMessage
+                      content={streamingText}
+                      onCopyContent={handleCopyContent}
+                      statusLabel={streamStatus}
+                      tools={streamTools}
+                    />
                   ) : null}
                 </div>
               ) : activeProject && hasConversationContent ? (
                 <div className="local-message-list">
-                  <StreamingMessage content={streamingText} tools={streamTools} />
+                  <StreamingMessage
+                    content={streamingText}
+                    onCopyContent={handleCopyContent}
+                    statusLabel={streamStatus}
+                    tools={streamTools}
+                  />
                 </div>
               ) : null}
             </article>
@@ -687,11 +1028,13 @@ function WorkspacePage({
             </div>
             <PromptComposer
               activeSession={activeSession}
+              canCompose={canCompose}
               composerText={composerText}
               isSending={isSending}
-              placeholder={activeSession ? "要求后续变更" : "请先创建或选择项目会话"}
+              placeholder={canCompose ? "要求后续变更" : "请先创建或选择项目会话"}
               onChange={setComposerText}
               onSubmit={handleSendMessage}
+              textareaRef={composerTextareaRef}
               onModeClick={() => setNotice("审批模式待接入")}
             />
           </footer>
@@ -716,20 +1059,24 @@ function WorkspacePage({
 function EmptyProjectPrompt({
   project,
   activeSession,
+  canCompose,
   composerText,
   isSending,
   notice,
   onChange,
   onSubmit,
+  textareaRef,
   onModeClick,
 }: {
   project: Project;
-  activeSession: ProjectSession;
+  activeSession: ProjectSession | null;
+  canCompose: boolean;
   composerText: string;
   isSending: boolean;
   notice: string;
   onChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  textareaRef: RefObject<HTMLTextAreaElement>;
   onModeClick: () => void;
 }) {
   return (
@@ -738,11 +1085,13 @@ function EmptyProjectPrompt({
         <h2>我们应该在 {project.name} 中构建什么？</h2>
         <PromptComposer
           activeSession={activeSession}
+          canCompose={canCompose}
           composerText={composerText}
           isSending={isSending}
           placeholder="随心输入"
           onChange={onChange}
           onSubmit={onSubmit}
+          textareaRef={textareaRef}
           onModeClick={onModeClick}
         />
         <div className="project-context-bar" aria-label="项目上下文">
@@ -758,29 +1107,44 @@ function EmptyProjectPrompt({
 
 function PromptComposer({
   activeSession,
+  canCompose,
   composerText,
   isSending,
   placeholder,
   onChange,
   onSubmit,
+  textareaRef,
   onModeClick,
 }: {
   activeSession: ProjectSession | null;
+  canCompose: boolean;
   composerText: string;
   isSending: boolean;
   placeholder: string;
   onChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  textareaRef: RefObject<HTMLTextAreaElement>;
   onModeClick: () => void;
 }) {
+  const canUseComposer = Boolean(activeSession || canCompose);
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  };
+
   return (
     <form className="composer" onSubmit={onSubmit}>
       <textarea
+        ref={textareaRef}
         placeholder={placeholder}
         rows={3}
         value={composerText}
-        disabled={!activeSession || isSending}
+        disabled={!canUseComposer}
         onChange={(event) => onChange(event.target.value)}
+        onKeyDown={handleKeyDown}
       />
       <div className="composer-toolbar">
         <button type="button" onClick={() => onChange(`${composerText}+ `)}>
@@ -793,7 +1157,7 @@ function PromptComposer({
         <button
           type="submit"
           aria-label="发送"
-          disabled={!composerText.trim() || !activeSession || isSending}
+          disabled={!composerText.trim() || !canUseComposer || isSending}
         >
           {isSending ? "…" : "↑"}
         </button>
@@ -813,18 +1177,6 @@ function EmptyWorkspace({ onCreate }: { onCreate: () => void }) {
     </div>
   );
 }
-
-const categoryMeta: Record<
-  ToolCategory,
-  { action: string; icon: string; label: string }
-> = {
-  thinking: { action: "思考", icon: "◇", label: "思考" },
-  terminal: { action: "执行命令", icon: "$", label: "命令" },
-  file: { action: "处理文件", icon: "□", label: "文件" },
-  search: { action: "查找上下文", icon: "#", label: "检索" },
-  mcp: { action: "调用 MCP", icon: "⌁", label: "MCP" },
-  tool: { action: "调用工具", icon: "⊞", label: "工具" },
-};
 
 function getToolCategory(name: string): ToolCategory {
   const normalized = name.toLowerCase();
@@ -899,85 +1251,845 @@ function summarizeToolPayload(value: unknown): string {
   return text.length > 220 ? `${text.slice(0, 220)}...` : text;
 }
 
-function MessageBubble({ message }: { message: SessionMessage }) {
+function MessageBubble({
+  message,
+  onCopyContent,
+  onCopyQuestion,
+  onEditQuestion,
+}: {
+  message: SessionMessage;
+  onCopyContent: CopyContentHandler;
+  onCopyQuestion: (content: string) => void;
+  onEditQuestion: (content: string) => void;
+}) {
   const isAssistant = message.role === "assistant";
   const toolItems = normalizeToolSummary(message.tool_summary);
+  const displayContent = normalizeMessageContent(message.content);
   return (
     <div className={isAssistant ? "message-bubble assistant" : "message-bubble user"}>
-      <strong>{isAssistant ? "Claude" : "你"}</strong>
-      <p>{message.content}</p>
-      {toolItems.length > 0 ? (
-        <ProcessTimeline tools={toolItems} state="done" />
+      {isAssistant ? (
+        <>
+          {message.status === "failed" ? (
+            <div className="message-error-row">
+              <p className="message-error-text">{displayContent}</p>
+              <CopyButton
+                label="复制错误"
+                onClick={() => copyAssistantContent(onCopyContent, displayContent, "错误详情")}
+              />
+            </div>
+          ) : null}
+          {message.status === "failed" ? null : (
+            <ProcessSummary
+              copyContent={displayContent}
+              copyLabel="回复正文"
+              durationLabel={formatProcessDuration(message.diff_summary)}
+              onCopyContent={onCopyContent}
+              state="done"
+              toolCount={toolItems.length}
+            />
+          )}
+          {toolItems.length > 0 ? (
+            <ToolStepList onCopyContent={onCopyContent} tools={toolItems} />
+          ) : null}
+          {message.status === "failed" ? null : (
+            <AssistantContent content={displayContent} onCopyContent={onCopyContent} />
+          )}
+        </>
+      ) : (
+        <UserQuestionMessage
+          message={message}
+          onCopyQuestion={onCopyQuestion}
+          onEditQuestion={onEditQuestion}
+        />
+      )}
+    </div>
+  );
+}
+
+function normalizeMessageContent(content: string) {
+  if (content === "会话正在运行") {
+    return "上次推理已中断，请重新发送。";
+  }
+  return content;
+}
+
+function UserQuestionMessage({
+  message,
+  onCopyQuestion,
+  onEditQuestion,
+}: {
+  message: SessionMessage;
+  onCopyQuestion: (content: string) => void;
+  onEditQuestion: (content: string) => void;
+}) {
+  return (
+    <>
+      <div className="user-question">
+        <p>{message.content}</p>
+      </div>
+      <div className="user-message-meta" aria-label="用户消息操作">
+        <time dateTime={message.created_at ?? undefined}>
+          {formatMessageTime(message.created_at)}
+        </time>
+        <button
+          className="user-action-button"
+          type="button"
+          aria-label="复制问题"
+          onClick={() => onCopyQuestion(message.content)}
+        >
+          <span className="user-action-icon copy" aria-hidden="true" />
+        </button>
+        <button
+          className="user-action-button"
+          type="button"
+          aria-label="修改问题"
+          onClick={() => onEditQuestion(message.content)}
+        >
+          <span className="user-action-icon edit" aria-hidden="true" />
+        </button>
+      </div>
+    </>
+  );
+}
+
+function StreamingMessage({
+  content,
+  onCopyContent,
+  statusLabel,
+  tools,
+}: {
+  content: string;
+  onCopyContent: CopyContentHandler;
+  statusLabel: string;
+  tools: ToolStatus[];
+}) {
+  return (
+    <div className="message-bubble assistant streaming">
+      <ProcessSummary
+        copyContent={content}
+        copyLabel="回复正文"
+        onCopyContent={content ? onCopyContent : undefined}
+        statusLabel={statusLabel || "思考中"}
+        state="running"
+        toolCount={tools.length}
+      />
+      {tools.length > 0 ? <ToolStepList onCopyContent={onCopyContent} tools={tools} /> : null}
+      {!content && tools.length === 0 ? (
+        <p className="stream-hint">
+          正在连接推理服务，后端会返回连接状态和执行结果。
+        </p>
+      ) : null}
+      {content ? <AssistantContent content={content} onCopyContent={onCopyContent} /> : null}
+    </div>
+  );
+}
+
+function ToolStepList({
+  onCopyContent,
+  tools,
+}: {
+  onCopyContent: CopyContentHandler;
+  tools: ToolStatus[];
+}) {
+  const copyValue = tools.map(formatToolStepForCopy).join("\n\n");
+  return (
+    <div className="tool-step-list" aria-label="推理步骤">
+      <div className="assistant-copy-row">
+        <CopyButton
+          label="复制步骤"
+          onClick={() => copyAssistantContent(onCopyContent, copyValue, "步骤")}
+        />
+      </div>
+      {tools.map((tool, index) => (
+        <div className="tool-step-item" key={`${tool.id}-${index}`}>
+          <span
+            className={tool.status === "running" ? "tool-step-dot running" : "tool-step-dot"}
+            aria-hidden="true"
+          />
+          <div>
+            <header>
+              <strong>{tool.name}</strong>
+              <span className="tool-step-status">
+                {tool.status === "running" ? "运行中" : "完成"}
+              </span>
+            </header>
+            {tool.partial ? <p>{tool.partial}</p> : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProcessSummary({
+  copyContent,
+  copyLabel,
+  durationLabel,
+  onCopyContent,
+  statusLabel,
+  state,
+  toolCount,
+}: {
+  copyContent?: string;
+  copyLabel?: string;
+  durationLabel?: string;
+  onCopyContent?: CopyContentHandler;
+  statusLabel?: string;
+  state: "running" | "done";
+  toolCount: number;
+}) {
+  const label =
+    state === "running"
+      ? statusLabel || (toolCount > 0 ? `处理中 ${toolCount} 步` : "处理中")
+      : durationLabel
+        ? `已处理 ${durationLabel}`
+        : "已处理";
+  return (
+    <div className="process-summary" aria-label="推理执行状态">
+      <strong>{label}</strong>
+      <span className="process-chevron" aria-hidden="true">›</span>
+      {onCopyContent && copyContent ? (
+        <CopyButton
+          label="复制回复"
+          onClick={() =>
+            copyAssistantContent(onCopyContent, copyContent, copyLabel ?? "回复正文")
+          }
+        />
       ) : null}
     </div>
   );
 }
 
-function StreamingMessage({ content, tools }: { content: string; tools: ToolStatus[] }) {
+function AssistantContent({
+  content,
+  onCopyContent,
+}: {
+  content: string;
+  onCopyContent: CopyContentHandler;
+}) {
+  const blocks = parseAssistantContent(content);
   return (
-    <div className="message-bubble assistant streaming">
-      <ProcessTimeline tools={tools} state="running" />
-      {content ? <p>{content}</p> : null}
+    <div className="assistant-content">
+      {blocks.map((block, index) =>
+        block.type === "code" ? (
+          <CodeResultBlock
+            content={block.content}
+            key={`code-${index}`}
+            language={block.language}
+            onCopyContent={onCopyContent}
+          />
+        ) : (
+          <TextResultBlock
+            content={block.content}
+            key={`text-${index}`}
+            onCopyContent={onCopyContent}
+          />
+        ),
+      )}
     </div>
   );
 }
 
-function ProcessTimeline({
-  tools,
-  state,
+function TextResultBlock({
+  content,
+  onCopyContent,
 }: {
-  tools: ToolStatus[];
-  state: "running" | "done";
+  content: string;
+  onCopyContent: CopyContentHandler;
 }) {
-  const visibleTools =
-    tools.length > 0
-      ? tools
-      : [
-          {
-            id: "thinking",
-            name: "理解需求",
-            category: "thinking" as ToolCategory,
-            status: state === "done" ? "done" : "running",
-            partial: "正在分析上下文并规划下一步",
-          },
-        ];
-  const categoryNames = Array.from(new Set(visibleTools.map((tool) => tool.category)));
+  const blocks = parseTextLineBlocks(content);
   return (
-    <section className="process-panel" aria-label="Claude 执行过程">
-      <header className="process-header">
-        <span className={state === "running" ? "process-spinner" : "process-done"} />
-        <div>
-          <strong>{state === "running" ? "Claude 正在处理" : "处理过程"}</strong>
-          <span>{visibleTools.length} 个步骤</span>
-        </div>
+    <>
+      {blocks.map((block, index) =>
+        block.type === "heading" ? (
+          <h3
+            className={`assistant-heading level-${block.level}`}
+            key={`heading-${index}`}
+          >
+            {renderInlineRichText(block.content, `${index}`, onCopyContent)}
+          </h3>
+        ) : block.type === "quote" ? (
+          <blockquote className="assistant-quote" key={`quote-${index}`}>
+            {renderInlineRichText(block.content, `${index}`, onCopyContent)}
+          </blockquote>
+        ) : block.type === "list" ? (
+          <ListResultBlock block={block} index={index} onCopyContent={onCopyContent} />
+        ) : block.type === "table" ? (
+          <AssistantTableBlock
+            block={block}
+            key={`table-${index}`}
+            onCopyContent={onCopyContent}
+          />
+        ) : block.type === "workflow" ? (
+          <WorkflowCardBlock
+            block={block}
+            key={`workflow-${index}`}
+            onCopyContent={onCopyContent}
+          />
+        ) : (
+          <p className="assistant-paragraph" key={`paragraph-${index}`}>
+            {renderInlineRichText(block.content, `${index}`, onCopyContent)}
+          </p>
+        ),
+      )}
+    </>
+  );
+}
+
+function ListResultBlock({
+  block,
+  index,
+  onCopyContent,
+}: {
+  block: Extract<TextLineBlock, { type: "list" }>;
+  index: number;
+  onCopyContent: CopyContentHandler;
+}) {
+  const ListTag = block.ordered ? "ol" : "ul";
+  return (
+    <ListTag
+      className={block.checklist ? "assistant-list assistant-checklist" : "assistant-list"}
+      key={`list-${index}`}
+    >
+      {block.items.map((item, itemIndex) => (
+        <li key={`${index}-${itemIndex}`}>
+          {block.checklist ? (
+            <span
+              className={item.checked ? "checkmark checked" : "checkmark"}
+              aria-hidden="true"
+            />
+          ) : null}
+          <span>{renderInlineRichText(item.content, `${index}-${itemIndex}`, onCopyContent)}</span>
+        </li>
+      ))}
+    </ListTag>
+  );
+}
+
+function AssistantTableBlock({
+  block,
+  onCopyContent,
+}: {
+  block: Extract<TextLineBlock, { type: "table" }>;
+  onCopyContent: CopyContentHandler;
+}) {
+  return (
+    <div className="assistant-table-wrap">
+      <div className="assistant-copy-row">
+        <CopyButton
+          label="复制表格"
+          onClick={() => copyAssistantContent(onCopyContent, formatTableForCopy(block), "表格")}
+        />
+      </div>
+      <table className="assistant-table">
+        <thead>
+          <tr>
+            {block.headers.map((header, index) => (
+              <th key={index}>
+                {renderInlineRichText(header, `head-${index}`, onCopyContent)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {block.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {block.headers.map((_, cellIndex) => (
+                <td key={cellIndex}>
+                  {renderInlineRichText(
+                    row[cellIndex] ?? "",
+                    `${rowIndex}-${cellIndex}`,
+                    onCopyContent,
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function WorkflowCardBlock({
+  block,
+  onCopyContent,
+}: {
+  block: Extract<TextLineBlock, { type: "workflow" }>;
+  onCopyContent: CopyContentHandler;
+}) {
+  return (
+    <section className="workflow-card">
+      <header>
+        <span className="workflow-card-dot" aria-hidden="true" />
+        <strong>{block.title}</strong>
+        <CopyButton
+          label="复制卡片"
+          onClick={() => copyAssistantContent(onCopyContent, formatWorkflowForCopy(block), "卡片")}
+        />
       </header>
-      <div className="process-chips" aria-label="过程分类">
-        {categoryNames.map((category) => (
-          <span key={category}>{categoryMeta[category].label}</span>
+      <ul>
+        {block.items.map((item, index) => (
+          <li key={index}>
+            <span
+              className={item.checked ? "checkmark checked" : "checkmark"}
+              aria-hidden="true"
+            />
+            <span>{renderInlineRichText(item.content, `workflow-${index}`, onCopyContent)}</span>
+          </li>
         ))}
-      </div>
-      <div className="process-steps">
-        {visibleTools.map((tool) => {
-          const meta = categoryMeta[tool.category];
-          return (
-            <article className="process-step" key={tool.id}>
-              <span className="process-step-icon" aria-hidden="true">
-                {meta.icon}
-              </span>
-              <div className="process-step-main">
-                <div className="process-step-title">
-                  <strong>{meta.action}</strong>
-                  <span>{tool.name}</span>
-                  <small>{tool.status === "done" ? "完成" : "进行中"}</small>
-                </div>
-                {tool.partial ? <code>{tool.partial}</code> : null}
-              </div>
-            </article>
-          );
-        })}
-      </div>
+      </ul>
     </section>
   );
+}
+
+function CodeResultBlock({
+  content,
+  language,
+  onCopyContent,
+}: {
+  content: string;
+  language: string;
+  onCopyContent: CopyContentHandler;
+}) {
+  return (
+    <figure className="result-code-block">
+      <figcaption>
+        <span>{language || "text"}</span>
+        <CopyButton
+          label="复制代码"
+          onClick={() => copyAssistantContent(onCopyContent, content, "代码")}
+        />
+      </figcaption>
+      <pre>{content}</pre>
+    </figure>
+  );
+}
+
+function parseAssistantContent(content: string): AssistantContentBlock[] {
+  const blocks: AssistantContentBlock[] = [];
+  const pattern = /```([^\n`]*)\n?([\s\S]*?)```/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(content)) !== null) {
+    const text = content.slice(cursor, match.index);
+    if (text.trim()) {
+      blocks.push({ type: "text", content: text });
+    }
+    blocks.push({
+      type: "code",
+      language: match[1]?.trim() || "text",
+      content: match[2].replace(/\n$/, ""),
+    });
+    cursor = match.index + match[0].length;
+  }
+
+  const rest = content.slice(cursor);
+  if (rest.trim()) {
+    blocks.push({ type: "text", content: rest });
+  }
+
+  return blocks.length > 0 ? blocks : [{ type: "text", content }];
+}
+
+function parseTextLineBlocks(content: string): TextLineBlock[] {
+  const blocks: TextLineBlock[] = [];
+  const paragraphLines: string[] = [];
+  const listItems: TextListItem[] = [];
+  let listOrdered = false;
+  let listChecklist = false;
+  let workflowTitle: string | null = null;
+  let workflowItems: TextListItem[] = [];
+
+  const flushParagraph = () => {
+    const text = paragraphLines.join(" ").replace(/\s+/g, " ").trim();
+    if (text) {
+      blocks.push({ type: "paragraph", content: text });
+    }
+    paragraphLines.length = 0;
+  };
+  const flushList = () => {
+    if (listItems.length > 0) {
+      blocks.push({
+        type: "list",
+        ordered: listOrdered,
+        checklist: listChecklist,
+        items: [...listItems],
+      });
+    }
+    listItems.length = 0;
+    listOrdered = false;
+    listChecklist = false;
+  };
+  const flushWorkflow = () => {
+    if (workflowTitle) {
+      blocks.push({
+        type: "workflow",
+        title: workflowTitle,
+        items:
+          workflowItems.length > 0
+            ? [...workflowItems]
+            : [{ content: "等待后续执行记录", checked: false }],
+      });
+    }
+    workflowTitle = null;
+    workflowItems = [];
+  };
+  const flushAll = () => {
+    flushParagraph();
+    flushList();
+    flushWorkflow();
+  };
+
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  let lineIndex = 0;
+  while (lineIndex < lines.length) {
+    const line = lines[lineIndex];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (workflowTitle && workflowItems.length === 0) {
+        lineIndex += 1;
+        continue;
+      }
+      flushAll();
+      lineIndex += 1;
+      continue;
+    }
+
+    const workflow = trimmed.match(/^\[(.+(?:Card|卡片))\]$/i);
+    if (workflow) {
+      flushAll();
+      workflowTitle = workflow[1].trim();
+      lineIndex += 1;
+      continue;
+    }
+
+    const tableRows: string[] = [];
+    if (isMarkdownTableRow(trimmed) && isMarkdownTableSeparator(lines[lineIndex + 1]?.trim())) {
+      flushAll();
+      tableRows.push(trimmed);
+      lineIndex += 2;
+      while (lineIndex < lines.length && isMarkdownTableRow(lines[lineIndex].trim())) {
+        tableRows.push(lines[lineIndex].trim());
+        lineIndex += 1;
+      }
+      const [headerLine, ...bodyLines] = tableRows;
+      blocks.push({
+        type: "table",
+        headers: parseMarkdownTableCells(headerLine),
+        rows: bodyLines.map(parseMarkdownTableCells),
+      });
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushAll();
+      blocks.push({
+        type: "heading",
+        level: heading[1].length,
+        content: heading[2].trim(),
+      });
+      lineIndex += 1;
+      continue;
+    }
+
+    const quote = trimmed.match(/^>\s+(.+)$/);
+    if (quote) {
+      flushAll();
+      blocks.push({ type: "quote", content: quote[1].trim() });
+      lineIndex += 1;
+      continue;
+    }
+
+    const checklist = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/);
+    if (checklist) {
+      flushParagraph();
+      if (workflowTitle) {
+        workflowItems.push({
+          content: checklist[2].trim(),
+          checked: checklist[1].toLowerCase() === "x",
+        });
+      } else {
+        listChecklist = true;
+        listOrdered = false;
+        listItems.push({
+          content: checklist[2].trim(),
+          checked: checklist[1].toLowerCase() === "x",
+        });
+      }
+      lineIndex += 1;
+      continue;
+    }
+
+    const bullet = trimmed.match(/^([-*•]|\d+[.)])\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      const ordered = /^\d/.test(bullet[1]);
+      if (workflowTitle) {
+        workflowItems.push({ content: bullet[2].trim(), checked: true });
+      } else {
+        if (listItems.length > 0 && listOrdered !== ordered) {
+          flushList();
+        }
+        listOrdered = ordered;
+        listItems.push({ content: bullet[2].trim() });
+      }
+      lineIndex += 1;
+      continue;
+    }
+
+    if (listItems.length > 0 && /^\s+/.test(line)) {
+      listItems[listItems.length - 1].content = `${listItems[listItems.length - 1].content} ${trimmed}`;
+      lineIndex += 1;
+      continue;
+    }
+
+    if (workflowTitle && !/^\[.+\]$/.test(trimmed)) {
+      workflowItems.push({ content: trimmed, checked: false });
+      lineIndex += 1;
+      continue;
+    }
+
+    flushList();
+    paragraphLines.push(trimmed);
+    lineIndex += 1;
+  }
+
+  flushAll();
+
+  return blocks.length > 0 ? blocks : [{ type: "paragraph", content: content.trim() }];
+}
+
+function isMarkdownTableRow(line: string | undefined) {
+  return Boolean(line && line.includes("|") && /^\|?.+\|.+\|?$/.test(line));
+}
+
+function isMarkdownTableSeparator(line: string | undefined) {
+  return Boolean(line && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line));
+}
+
+function parseMarkdownTableCells(line: string) {
+  return line
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function renderInlineRichText(
+  text: string,
+  keyPrefix: string,
+  onCopyContent?: CopyContentHandler,
+) {
+  const parts = text
+    .split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|(?:[\w.@-]+\/)+[\w.@-]+(?:\s+\(line\s+\d+\))?)/g)
+    .filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code className="result-inline-code" key={`${keyPrefix}-${index}`}>
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong className="result-inline-strong" key={`${keyPrefix}-${index}`}>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    const markdownLink = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (markdownLink) {
+      return (
+        <span className="result-file-reference" key={`${keyPrefix}-${index}`}>
+          <a
+            className="result-file-link"
+            href={markdownLink[2]}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {markdownLink[1]}
+          </a>
+          {onCopyContent ? (
+            <CopyButton
+              label="复制引用"
+              onClick={() =>
+                copyAssistantContent(
+                  onCopyContent,
+                  formatMarkdownLinkForCopy(markdownLink[1], markdownLink[2]),
+                  "引用",
+                )
+              }
+            />
+          ) : null}
+        </span>
+      );
+    }
+    if (/^(?:[\w.@-]+\/)+[\w.@-]+(?:\s+\(line\s+\d+\))?$/.test(part)) {
+      return (
+        <span className="result-file-reference" key={`${keyPrefix}-${index}`}>
+          <span className="result-file-link">{part}</span>
+          {onCopyContent ? (
+            <CopyButton
+              label="复制文件路径"
+              onClick={() => copyAssistantContent(onCopyContent, part, "文件路径")}
+            />
+          ) : null}
+        </span>
+      );
+    }
+    return <span key={`${keyPrefix}-${index}`}>{part}</span>;
+  });
+}
+
+function CopyButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button className="copy-action-button" type="button" onClick={onClick}>
+      {label}
+    </button>
+  );
+}
+
+function copyAssistantContent(
+  onCopyContent: CopyContentHandler,
+  content: string,
+  label: string,
+) {
+  onCopyContent(content, label);
+}
+
+function formatToolStepForCopy(tool: ToolStatus) {
+  const lines = [`工具：${tool.name}`, `状态：${tool.status === "running" ? "运行中" : "完成"}`];
+  if (tool.partial) {
+    lines.push(`摘要：${tool.partial}`);
+  }
+  return lines.join("\n");
+}
+
+function formatTableForCopy(block: Extract<TextLineBlock, { type: "table" }>) {
+  const divider = block.headers.map(() => "---");
+  return [block.headers, divider, ...block.rows]
+    .map((row) => `| ${row.join(" | ")} |`)
+    .join("\n");
+}
+
+function formatWorkflowForCopy(block: Extract<TextLineBlock, { type: "workflow" }>) {
+  const items = block.items.map((item) => {
+    const marker = item.checked ? "[x]" : "[ ]";
+    return `- ${marker} ${item.content}`;
+  });
+  return [`[${block.title}]`, ...items].join("\n");
+}
+
+function formatMarkdownLinkForCopy(label: string, href: string) {
+  if (!label || label === href) {
+    return href;
+  }
+  return `${label}\n${href}`;
+}
+
+function formatProcessDuration(items: Record<string, unknown>[]): string | undefined {
+  const durationMs = items
+    .map((item) => item.duration_ms)
+    .find((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (durationMs === undefined) {
+    return undefined;
+  }
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)}ms`;
+  }
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function formatMessageTime(value: string | null) {
+  const date = value ? new Date(value) : new Date();
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function redactSensitiveText(content: string) {
+  return content
+    .replace(
+      /\b(authorization)(\s*[:=]\s*)(["']?)Bearer\s+([^\s"',;]+)(["']?)/gi,
+      (
+        _match,
+        name: string,
+        separator: string,
+        quote: string,
+        value: string,
+        endQuote: string,
+      ) => `${name}${separator}${quote}Bearer ${maskSecretValue(value)}${endQuote}`,
+    )
+    .replace(
+      /\b(authorization)(\s*[:=]\s*)(["']?)(?!Bearer\s+)([^\n"',;]+)(["']?)/gi,
+      (
+        _match,
+        name: string,
+        separator: string,
+        quote: string,
+        value: string,
+        endQuote: string,
+      ) => `${name}${separator}${quote}${maskAuthorizationValue(value.trim())}${endQuote}`,
+    )
+    .replace(
+      /\b(api[_-]?key|token|cookie|password|secret|ssh[_-]?key)(\s*[:=]\s*)(["']?)([^\s"',;]+)/gi,
+      (_match, name: string, separator: string, quote: string, value: string) =>
+        `${name}${separator}${quote}${maskSecretValue(value)}`,
+    )
+    .replace(/\bBearer\s+([A-Za-z0-9._~+/-]{12,})/g, (_match, value: string) => {
+      return `Bearer ${maskSecretValue(value)}`;
+    })
+    .replace(/\b(sk|ak|pk|rk)-[A-Za-z0-9_-]{12,}/g, (value) => maskSecretValue(value));
+}
+
+function maskAuthorizationValue(value: string) {
+  const scheme = value.match(/^([A-Za-z]+)\s+(.+)$/);
+  if (scheme) {
+    return `${scheme[1]} ${maskSecretValue(scheme[2])}`;
+  }
+  return maskSecretValue(value);
+}
+
+function maskSecretValue(value: string) {
+  if (value.length <= 8) {
+    return "****";
+  }
+  return `${value.slice(0, 4)}****${value.slice(-4)}`;
+}
+
+async function copyText(content: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(content);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = content;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error("copy failed");
+  }
 }
 
 function CreateProjectModal({
@@ -990,44 +2102,30 @@ function CreateProjectModal({
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleDirectoryName = async (directoryName: string) => {
+  const handlePickDirectory = async () => {
     setError("");
-    if (!directoryName.trim()) {
-      setError("未识别到本地目录名");
+    let pickedDirectory: PickedDirectory | null = null;
+    try {
+      pickedDirectory = await pickDirectoryFromDesktopBridge();
+    } catch (pickError) {
+      setError(pickError instanceof Error ? pickError.message : "本地目录选择失败");
+      return;
+    }
+    if (!pickedDirectory) {
+      setError("当前环境未提供本地目录路径桥接，无法记录真实文件夹路径");
       return;
     }
     setIsSubmitting(true);
     try {
-      await onCreate({ directoryName });
+      await onCreate({
+        directoryName: pickedDirectory.name,
+        rootPath: pickedDirectory.path,
+      });
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "项目创建失败");
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const handlePickDirectory = async () => {
-    const picker = window as WindowWithDirectoryPicker;
-    if (picker.showDirectoryPicker) {
-      try {
-        const handle = await picker.showDirectoryPicker();
-        await handleDirectoryName(handle.name);
-        return;
-      } catch (pickError) {
-        if (pickError instanceof DOMException && pickError.name === "AbortError") {
-          return;
-        }
-        setError("当前浏览器无法完成目录选择");
-      }
-    }
-    document.getElementById("project-directory-input")?.click();
-  };
-
-  const handleFallbackPick = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] as FileWithRelativePath | undefined;
-    const directoryName = file?.webkitRelativePath?.split("/")[0] ?? "";
-    event.target.value = "";
-    await handleDirectoryName(directoryName);
   };
 
   return (
@@ -1049,15 +2147,6 @@ function CreateProjectModal({
           <span className="selected-dot" />
         </div>
 
-        <input
-          id="project-directory-input"
-          className="directory-input"
-          type="file"
-          multiple
-          onChange={handleFallbackPick}
-          {...{ webkitdirectory: "", directory: "" }}
-        />
-
         {error ? <p className="modal-error">{error}</p> : null}
 
         <div className="modal-actions">
@@ -1065,7 +2154,7 @@ function CreateProjectModal({
             取消
           </button>
           <button type="button" disabled={isSubmitting} onClick={handlePickDirectory}>
-            {isSubmitting ? "创建中..." : "使用现有文件夹"}
+            {isSubmitting ? "导入中..." : "使用现有文件夹"}
           </button>
         </div>
       </section>
@@ -1073,17 +2162,56 @@ function CreateProjectModal({
   );
 }
 
-type FileWithRelativePath = File & {
-  webkitRelativePath?: string;
-};
-
-type DirectoryHandle = {
+type PickedDirectory = {
   name: string;
+  path: string;
 };
 
-type WindowWithDirectoryPicker = Window & {
-  showDirectoryPicker?: () => Promise<DirectoryHandle>;
+type DirectoryBridge = {
+  pickDirectory?: () => Promise<PickedDirectory | null>;
+  selectDirectory?: () => Promise<PickedDirectory | null>;
 };
+
+type WindowWithDirectoryBridge = Window & {
+  claudeSdk?: DirectoryBridge;
+  codex?: DirectoryBridge;
+  electronAPI?: DirectoryBridge;
+};
+
+async function pickDirectoryFromDesktopBridge() {
+  const bridgeWindow = window as WindowWithDirectoryBridge;
+  const pickers = [
+    () => bridgeWindow.claudeSdk?.pickDirectory?.() ?? null,
+    () => bridgeWindow.claudeSdk?.selectDirectory?.() ?? null,
+    () => bridgeWindow.codex?.pickDirectory?.() ?? null,
+    () => bridgeWindow.codex?.selectDirectory?.() ?? null,
+    () => bridgeWindow.electronAPI?.pickDirectory?.() ?? null,
+    () => bridgeWindow.electronAPI?.selectDirectory?.() ?? null,
+  ];
+
+  for (const picker of pickers) {
+    const directory = await Promise.resolve(picker()).catch(() => null);
+    if (directory?.path) {
+      return {
+        name: directory.name || getDirectoryNameFromPath(directory.path),
+        path: directory.path,
+      };
+    }
+  }
+  const directory = await requestPickLocalDirectory();
+  if (directory?.path) {
+    return {
+      name: directory.name || getDirectoryNameFromPath(directory.path),
+      path: directory.path,
+    };
+  }
+  return null;
+}
+
+function getDirectoryNameFromPath(path: string) {
+  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "project";
+}
 
 function getInitials(name: string | null) {
   if (!name) {
