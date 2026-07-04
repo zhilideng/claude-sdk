@@ -38,3 +38,6 @@ logs/
 
 # 运行期上传工作区
 .runtime/
+
+# macOS 系统文件（Finder 元数据，不应入库）
+.DS_Store
