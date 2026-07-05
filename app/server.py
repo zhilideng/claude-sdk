@@ -126,9 +126,11 @@ async def lifespan(app: FastAPI):
         from app.core.llm.gateway import close_llm
         from app.core.skills.registry import close_skills
         from app.mcp.manager import close_mcp_clients
+        from app.tasks.agent_task_worker import close_agent_task_worker
 
         await _cleanup_resources(
             [
+                ("agent_task_worker", close_agent_task_worker),
                 ("mcp_clients", close_mcp_clients),
                 ("skills", close_skills),
                 ("llm", close_llm),

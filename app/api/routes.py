@@ -18,6 +18,7 @@ from app.api.v1.llm_router import router as llm_router
 from app.api.v1.projects_router import router as projects_router
 from app.api.v1.sessions_router import router as sessions_router
 from app.api.v1.skills_router import router as skills_router
+from app.api.v1.tasks_router import router as tasks_router
 from app.api.v1.users_router import router as users_router
 
 
@@ -35,4 +36,5 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(projects_router, prefix="/v1")
     app.include_router(sessions_router, prefix="/v1")
     app.include_router(skills_router, prefix="/v1")
+    app.include_router(tasks_router, prefix="/v1")
     app.include_router(users_router, prefix="/v1")

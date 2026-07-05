@@ -314,10 +314,12 @@ button {
 
 .project-list {
   display: grid;
+  min-width: 0;
   min-height: 0;
   align-content: start;
   gap: 12px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: 14px;
 }
 
@@ -374,6 +376,7 @@ button {
 
 .project-group {
   display: grid;
+  min-width: 0;
   gap: 5px;
 }
 
@@ -409,10 +412,16 @@ button {
 
 .thread-list {
   display: grid;
+  min-width: 0;
   gap: 2px;
 }
 
 .thread-item {
+  display: grid;
+  max-width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(42px, auto);
+  justify-content: stretch;
   padding: 0 10px 0 36px;
   color: var(--color-text);
   font-size: 13px;
@@ -423,16 +432,44 @@ button {
   background: rgba(216, 224, 226, 0.72);
 }
 
-.thread-item span {
+.thread-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.thread-item small {
+.thread-meta {
+  display: inline-flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 42px;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.thread-meta small {
   color: var(--color-text-muted);
   font-size: 12px;
+}
+
+.thread-running-spinner {
+  display: inline-block;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-text-muted);
+  border-radius: 50%;
+  animation: spin 0.82s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .sidebar-account {

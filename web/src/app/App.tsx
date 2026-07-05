@@ -29,6 +29,16 @@ import {
   saveBrowserAuthUser,
   type AuthUser,
 } from "./authSession";
+import {
+  buildRunningTaskMarkers,
+  isActiveTaskStatus,
+  parseConversationSessionId,
+  removeRunningTaskMarker,
+  upsertRunningTaskMarker,
+  type AgentTaskRunningItem,
+  type AgentTaskStatus,
+  type RunningTaskMarkers,
+} from "./agentTaskState";
 
 type AuthMode = "login" | "register";
 
@@ -109,6 +119,48 @@ type StreamEventEnvelope = {
   message_id: number | null;
   data: Record<string, unknown>;
   created_at: string;
+};
+
+type AgentTask = {
+  task_id: string;
+  conversation_id: string | null;
+  title: string | null;
+  prompt: string;
+  status: AgentTaskStatus;
+  result: string | null;
+  error_message: string | null;
+  cancel_requested: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+type AgentTaskEvent = {
+  seq: number;
+  event_type: string;
+  content: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+};
+
+type AgentTaskCreateData = {
+  task_id: string;
+  status: AgentTaskStatus;
+};
+
+type AgentTaskEventListData = {
+  items: AgentTaskEvent[];
+};
+
+type AgentTaskRunningListData = {
+  items: AgentTaskRunningItem[];
+};
+
+type AgentTaskStreamOptions = {
+  onConnected?: () => void;
+  onReconnect?: (delayMs: number) => void;
+  onError?: () => void;
 };
 
 type ToolStatus = {
@@ -207,6 +259,51 @@ class AiStreamRequestError extends Error {
 
 function getWorkspaceSnapshotKey(userId: number) {
   return `claude-sdk.workspace.${userId}`;
+}
+
+function getActiveTaskStorageKey(userId: number) {
+  return `claude-sdk.activeTask.${userId}`;
+}
+
+function readActiveTaskId(userId: number): string | null {
+  try {
+    return window.localStorage.getItem(getActiveTaskStorageKey(userId));
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveTaskId(userId: number, taskId: string) {
+  try {
+    window.localStorage.setItem(getActiveTaskStorageKey(userId), taskId);
+  } catch {
+    // localStorage 失败不应阻断任务执行。
+  }
+}
+
+function clearActiveTaskId(userId: number, taskId?: string) {
+  try {
+    const key = getActiveTaskStorageKey(userId);
+    if (!taskId || window.localStorage.getItem(key) === taskId) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // localStorage 失败不影响主流程。
+  }
+}
+
+function readTaskIdFromUrl() {
+  return new URLSearchParams(window.location.search).get("task_id");
+}
+
+function writeTaskIdToUrl(taskId: string | null) {
+  const url = new URL(window.location.href);
+  if (taskId) {
+    url.searchParams.set("task_id", taskId);
+  } else {
+    url.searchParams.delete("task_id");
+  }
+  window.history.replaceState({}, "", url.toString());
 }
 
 function createEmptyWorkspaceSnapshot(): WorkspaceSnapshot {
@@ -394,6 +491,111 @@ async function requestMessages(
   return requestJson<SessionMessageListData>(
     `/v1/sessions/${sessionId}/messages?user_id=${userId}`,
   );
+}
+
+async function requestCreateAgentTask(
+  conversationId: string,
+  prompt: string,
+  title?: string,
+): Promise<AgentTaskCreateData> {
+  return requestJson<AgentTaskCreateData>("/v1/tasks", {
+    method: "POST",
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      prompt,
+      title,
+    }),
+  });
+}
+
+async function requestAgentTask(taskId: string): Promise<AgentTask> {
+  return requestJson<AgentTask>(`/v1/tasks/${taskId}`);
+}
+
+async function requestAgentTaskEvents(
+  taskId: string,
+  afterSeq = 0,
+): Promise<AgentTaskEventListData> {
+  return requestJson<AgentTaskEventListData>(
+    `/v1/tasks/${taskId}/events?after_seq=${afterSeq}`,
+  );
+}
+
+async function requestRunningAgentTasks(): Promise<AgentTaskRunningListData> {
+  return requestJson<AgentTaskRunningListData>("/v1/tasks/running");
+}
+
+async function requestCancelAgentTask(taskId: string): Promise<AgentTaskCreateData> {
+  return requestJson<AgentTaskCreateData>(`/v1/tasks/${taskId}/cancel`, {
+    method: "POST",
+  });
+}
+
+function subscribeAgentTaskEvents(
+  taskId: string,
+  afterSeq: number,
+  onEvent: (event: AgentTaskEvent) => void,
+  options: AgentTaskStreamOptions = {},
+) {
+  const reconnectDelays = [1000, 3000, 5000, 10000];
+  let closed = false;
+  let finished = false;
+  let retryIndex = 0;
+  let lastSeq = afterSeq;
+  let source: EventSource | null = null;
+  let retryTimer: number | null = null;
+
+  const closeSource = () => {
+    source?.close();
+    source = null;
+  };
+
+  const connect = () => {
+    if (closed || finished) {
+      return;
+    }
+    closeSource();
+    source = new EventSource(
+      `${apiBaseUrl}/v1/tasks/${taskId}/stream?after_seq=${lastSeq}`,
+    );
+    source.onopen = () => {
+      retryIndex = 0;
+      options.onConnected?.();
+    };
+    source.addEventListener("task_event", (message) => {
+      const event = JSON.parse(message.data) as AgentTaskEvent;
+      if (event.seq <= lastSeq) {
+        return;
+      }
+      lastSeq = event.seq;
+      onEvent(event);
+      if (isTerminalTaskEvent(event.event_type)) {
+        finished = true;
+        closeSource();
+      }
+    });
+    source.onerror = () => {
+      options.onError?.();
+      closeSource();
+      if (closed || finished) {
+        return;
+      }
+      const delay = reconnectDelays[Math.min(retryIndex, reconnectDelays.length - 1)];
+      retryIndex += 1;
+      options.onReconnect?.(delay);
+      retryTimer = window.setTimeout(connect, delay);
+    };
+  };
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (retryTimer !== null) {
+      window.clearTimeout(retryTimer);
+    }
+    closeSource();
+  };
 }
 
 async function requestSendMessageStream(
@@ -633,10 +835,16 @@ function WorkspacePage({
   const [streamingText, setStreamingText] = useState("");
   const [streamTools, setStreamTools] = useState<ToolStatus[]>([]);
   const [streamStatus, setStreamStatus] = useState("");
+  const [runningTasksBySessionId, setRunningTasksBySessionId] =
+    useState<RunningTaskMarkers>({});
   const [aiRequestState, setAiRequestState] = useState<AiRequestState | null>(null);
   const [requestElapsedMs, setRequestElapsedMs] = useState(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeTaskIdRef = useRef<string | null>(null);
+  const activeTaskSessionIdRef = useRef<number | null>(null);
+  const taskStreamCleanupRef = useRef<(() => void) | null>(null);
+  const lastTaskSeqRef = useRef(0);
   const aiRequestStateRef = useRef<AiRequestState | null>(null);
   const streamingTextRef = useRef("");
   const pendingLocalFailedMessageRef = useRef<{
@@ -751,6 +959,26 @@ function WorkspacePage({
   }, [user.id]);
 
   useEffect(() => {
+    void recoverLatestTask();
+    return () => {
+      taskStreamCleanupRef.current?.();
+      taskStreamCleanupRef.current = null;
+    };
+  }, [user.id]);
+
+  useEffect(() => {
+    if (Object.keys(runningTasksBySessionId).length === 0) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      void refreshRunningTaskMarkers().catch(() => {
+        // 后台运行态同步失败不影响当前会话操作。
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [runningTasksBySessionId]);
+
+  useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
       return;
@@ -775,6 +1003,11 @@ function WorkspacePage({
   }, [activeSessionId, user.id]);
 
   const handleSelectSession = (projectId: number, sessionId: number) => {
+    const runningTask = runningTasksBySessionId[sessionId];
+    stopTaskStream();
+    activeTaskIdRef.current = null;
+    activeTaskSessionIdRef.current = null;
+    setIsSending(false);
     setActiveProjectId(projectId);
     setActiveSessionId(sessionId);
     const snapshot = readWorkspaceSnapshot(user.id);
@@ -792,9 +1025,16 @@ function WorkspacePage({
     setStreamTools([]);
     setStreamStatus("");
     updateAiRequestState(null);
+    if (runningTask) {
+      void recoverTask(runningTask.taskId);
+    }
   };
 
   const handleCreateProject = async (form: CreateProjectForm) => {
+    stopTaskStream();
+    activeTaskIdRef.current = null;
+    activeTaskSessionIdRef.current = null;
+    setIsSending(false);
     const data = await requestImportProject(user.id, form);
     saveWorkspaceSnapshot(user.id, {
       activeProjectId: data.project.id,
@@ -822,6 +1062,10 @@ function WorkspacePage({
   };
 
   const handleCreateSession = async () => {
+    stopTaskStream();
+    activeTaskIdRef.current = null;
+    activeTaskSessionIdRef.current = null;
+    setIsSending(false);
     if (!activeProjectId) {
       setIsCreateModalOpen(true);
       return;
@@ -839,7 +1083,346 @@ function WorkspacePage({
     setIsMobileSidebarOpen(false);
   };
 
+  const stopTaskStream = () => {
+    taskStreamCleanupRef.current?.();
+    taskStreamCleanupRef.current = null;
+  };
+
+  const refreshSessionMessages = async (sessionId: number) => {
+    const data = await requestMessages(user.id, sessionId);
+    setMessages(data.items);
+    await loadProjects(sessionId);
+  };
+
+  const finishRecoveredTask = async (
+    taskId: string,
+    sessionId: number | null,
+    status: AgentTaskStatus,
+    errorMessage?: string | null,
+  ) => {
+    stopTaskStream();
+    if (status === "completed" || status === "failed" || status === "cancelled") {
+      clearActiveTaskId(user.id, taskId);
+      writeTaskIdToUrl(null);
+    }
+    activeTaskIdRef.current = null;
+    activeTaskSessionIdRef.current = null;
+    setIsSending(false);
+    abortControllerRef.current = null;
+    setStreamStatus("");
+    setStreamTools((items) => items.map((item) => ({ ...item, status: "done" })));
+
+    const currentAiState = aiRequestStateRef.current;
+    const finalTiming = {
+      ...(currentAiState?.timing ?? { requestStartAt: Date.now() }),
+      requestEndAt: Date.now(),
+    };
+    if (status === "completed") {
+      updateAiRequestState((current) =>
+        current
+          ? {
+              ...current,
+              status: "success",
+              stage: "done",
+              timing: finalTiming,
+              metrics: calculateAiDurationMetrics(finalTiming),
+            }
+          : current,
+      );
+    }
+    if (status === "cancelled" || status === "failed") {
+      const aiError = normalizeAiError(
+        status === "cancelled"
+          ? { error_code: "USER_CANCELLED", message: "任务已停止" }
+          : { message: errorMessage || "任务执行失败" },
+        {
+          stage: currentAiState?.stage ?? "reasoning",
+          timing: finalTiming,
+          metrics: calculateAiDurationMetrics(finalTiming),
+          generatedPartial: Boolean(streamingTextRef.current),
+          partialContent: streamingTextRef.current,
+          stream: true,
+          appVersion,
+          platform: navigator.userAgent,
+        },
+      );
+      updateAiRequestState({
+        status: status === "cancelled" ? "cancelled" : "failed",
+        stage: aiError.stage ?? currentAiState?.stage ?? "reasoning",
+        error: aiError,
+        timing: finalTiming,
+        metrics: calculateAiDurationMetrics(finalTiming),
+        partialContent: streamingTextRef.current,
+        generatedPartial: Boolean(streamingTextRef.current),
+        retryable: aiError.retryable,
+      });
+    }
+
+    if (sessionId) {
+      try {
+        await refreshSessionMessages(sessionId);
+        void refreshRunningTaskMarkers();
+        setStreamingText("");
+        setStreamTools([]);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "消息刷新失败");
+      }
+    }
+  };
+
+  const applyAgentTaskEvent = (
+    event: AgentTaskEvent,
+    sessionId: number | null,
+    taskId: string,
+  ) => {
+    if (event.seq <= lastTaskSeqRef.current) {
+      return;
+    }
+    lastTaskSeqRef.current = event.seq;
+
+    if (event.event_type === "task_created" || event.event_type === "task_queued") {
+      setStreamStatus("排队中");
+      updateAiRequestState((current) =>
+        current
+          ? {
+              ...current,
+              status: "queued",
+              stage: "queued",
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (event.event_type === "task_started") {
+      setStreamStatus("思考中");
+      updateAiRequestState((current) =>
+        current
+          ? {
+              ...current,
+              status: "reasoning",
+              stage: "reasoning",
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (event.event_type === "agent_message") {
+      setStreamStatus("推理中");
+      const content = event.content ?? "";
+      setStreamingText((value) => `${value}${content}`);
+      updateAiRequestState((current) =>
+        current
+          ? {
+              ...current,
+              status: "streaming",
+              stage: "streaming",
+              generatedPartial: true,
+              partialContent: `${streamingTextRef.current}${content}`,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (event.event_type === "tool_call") {
+      setStreamStatus("执行工具");
+      updateAiRequestState((current) =>
+        current
+          ? {
+              ...current,
+              status: "tool_calling",
+              stage: "tool_calling",
+            }
+          : current,
+      );
+      applyToolCallEvent(event, setStreamTools);
+      return;
+    }
+
+    if (event.event_type === "agent_step" || event.event_type === "command_output") {
+      setStreamStatus(event.content ?? "处理中");
+      setStreamTools((items) => [
+        ...items,
+        {
+          id: `step-${event.seq}`,
+          name: event.event_type === "command_output" ? "命令输出" : "执行步骤",
+          category: event.event_type === "command_output" ? "terminal" : "thinking",
+          status: "done",
+          partial: event.content ?? "",
+        },
+      ]);
+      return;
+    }
+
+    if (event.event_type === "task_completed") {
+      void finishRecoveredTask(taskId, sessionId, "completed");
+      return;
+    }
+
+    if (event.event_type === "task_failed") {
+      void finishRecoveredTask(taskId, sessionId, "failed", event.content);
+      return;
+    }
+
+    if (event.event_type === "task_cancelling") {
+      setStreamStatus("正在停止");
+      updateAiRequestState((current) =>
+        current
+          ? {
+              ...current,
+              status: "cancelled",
+              stage: current.stage,
+            }
+          : current,
+      );
+      return;
+    }
+
+    if (event.event_type === "task_cancelled") {
+      void finishRecoveredTask(taskId, sessionId, "cancelled", event.content);
+    }
+  };
+
+  const startTaskStream = (taskId: string, sessionId: number | null) => {
+    stopTaskStream();
+    taskStreamCleanupRef.current = subscribeAgentTaskEvents(
+      taskId,
+      lastTaskSeqRef.current,
+      (event) => applyAgentTaskEvent(event, sessionId, taskId),
+      {
+        onConnected: () => {
+          updateAiRequestState((current) => {
+            if (!current) {
+              return current;
+            }
+            const timing = {
+              ...current.timing,
+              connectionEndAt: current.timing.connectionEndAt ?? Date.now(),
+            };
+            return {
+              ...current,
+              timing,
+              metrics: calculateAiDurationMetrics(timing),
+            };
+          });
+        },
+        onReconnect: (delayMs) => {
+          setStreamStatus(`连接断开，${Math.round(delayMs / 1000)} 秒后重连`);
+        },
+        onError: () => {
+          setStreamStatus("连接恢复中");
+        },
+      },
+    );
+  };
+
+  const recoverTask = async (taskId: string) => {
+    const task = await requestAgentTask(taskId);
+    const sessionId = parseConversationSessionId(task.conversation_id);
+    activeTaskIdRef.current = task.task_id;
+    activeTaskSessionIdRef.current = sessionId;
+    lastTaskSeqRef.current = 0;
+    saveActiveTaskId(user.id, task.task_id);
+    writeTaskIdToUrl(task.task_id);
+    setIsSending(isActiveTaskStatus(task.status));
+    if (sessionId && isActiveTaskStatus(task.status)) {
+      setRunningTasksBySessionId((current) =>
+        upsertRunningTaskMarker(current, sessionId, {
+          taskId: task.task_id,
+          status: task.status,
+          title: task.title,
+        }),
+      );
+    }
+    setStreamStatus(formatTaskStatus(task.status));
+    setStreamingText("");
+    setStreamTools([]);
+    const requestStartAt = task.started_at ? Date.parse(task.started_at) : Date.now();
+    updateAiRequestState({
+      ...createAiRequestState(Number.isFinite(requestStartAt) ? requestStartAt : Date.now()),
+      status: task.status === "queued" ? "queued" : "reasoning",
+      stage: task.status === "queued" ? "queued" : "reasoning",
+    });
+
+    if (sessionId) {
+      await loadProjects(sessionId);
+      try {
+        const data = await requestMessages(user.id, sessionId);
+        setMessages(data.items);
+      } catch {
+        // 任务事件仍可恢复；消息列表刷新失败交给终态刷新再提示。
+      }
+    }
+
+    const events = await requestAgentTaskEvents(task.task_id, 0);
+    events.items.forEach((event) => applyAgentTaskEvent(event, sessionId, task.task_id));
+    if (isActiveTaskStatus(task.status)) {
+      startTaskStream(task.task_id, sessionId);
+    } else if (
+      task.status === "completed" ||
+      task.status === "failed" ||
+      task.status === "cancelled"
+    ) {
+      setRunningTasksBySessionId((current) =>
+        removeRunningTaskMarker(current, sessionId, task.task_id),
+      );
+      clearActiveTaskId(user.id, task.task_id);
+      writeTaskIdToUrl(null);
+    }
+  };
+
+  const refreshRunningTaskMarkers = async () => {
+    const running = await requestRunningAgentTasks();
+    const markers = buildRunningTaskMarkers(running.items);
+    setRunningTasksBySessionId(markers);
+    return running;
+  };
+
+  const recoverLatestTask = async () => {
+    const explicitTaskId = readTaskIdFromUrl() ?? readActiveTaskId(user.id);
+    try {
+      const running = await refreshRunningTaskMarkers();
+      if (explicitTaskId) {
+        await recoverTask(explicitTaskId);
+        return;
+      }
+      const firstTask = running.items[0];
+      if (firstTask) {
+        setNotice("有任务正在后台运行，已为你恢复进度");
+        await recoverTask(firstTask.task_id);
+      }
+    } catch {
+      if (explicitTaskId) {
+        clearActiveTaskId(user.id, explicitTaskId);
+        writeTaskIdToUrl(null);
+      }
+    }
+  };
+
   const handleCancelGeneration = () => {
+    const taskId = activeTaskIdRef.current;
+    if (taskId) {
+      setStreamStatus("正在停止");
+      void requestCancelAgentTask(taskId)
+        .then((data) => {
+          const sessionId = activeTaskSessionIdRef.current;
+          if (sessionId && isActiveTaskStatus(data.status)) {
+            setRunningTasksBySessionId((current) =>
+              upsertRunningTaskMarker(current, sessionId, {
+                taskId,
+                status: data.status,
+                title: runningTasksBySessionId[sessionId]?.title ?? null,
+              }),
+            );
+          }
+        })
+        .catch((error) => {
+          setNotice(error instanceof Error ? error.message : "停止任务失败");
+        });
+      return;
+    }
     abortControllerRef.current?.abort();
     setStreamStatus("正在停止");
   };
@@ -867,10 +1450,9 @@ function WorkspacePage({
       },
     });
     setRequestElapsedMs(0);
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
     let targetSessionId = activeSessionId;
     let optimisticUserMessage: SessionMessage | null = null;
+    let taskStarted = false;
     try {
       if (!targetSessionId) {
         if (!activeProjectId) {
@@ -883,10 +1465,14 @@ function WorkspacePage({
         );
         targetSessionId = session.id;
       }
+      if (!targetSessionId) {
+        return;
+      }
+      const taskSessionId = targetSessionId;
       setComposerText("");
       const optimisticMessage: SessionMessage = {
         id: -Date.now(),
-        session_id: targetSessionId,
+        session_id: taskSessionId,
         role: "user",
         content: nextMessage,
         status: "done",
@@ -897,152 +1483,41 @@ function WorkspacePage({
       optimisticUserMessage = optimisticMessage;
       setMessages((items) => [...items, optimisticMessage]);
 
-      await requestSendMessageStream(user.id, targetSessionId, nextMessage, (event) => {
-        if (event.type === "agent_started") {
-          setStreamStatus("思考中");
-          updateAiRequestState((current) =>
-            current
-              ? {
-                  ...current,
-                  status: "reasoning",
-                  stage: "reasoning",
-                }
-              : current,
-          );
-        }
-        if (event.type === "stage") {
-          const stage = normalizeAiStage(event.data.stage);
-          if (stage) {
-            const message = event.data.message;
-            setStreamStatus(typeof message === "string" ? message : formatAiStage(stage));
-            updateAiRequestState((current) =>
-              current
-                ? {
-                    ...current,
-                    status: stage === "tool_calling" ? "tool_calling" : "reasoning",
-                    stage,
-                  }
-                : current,
-            );
-          }
-        }
-        if (event.type === "assistant_delta") {
-          setStreamStatus("推理中");
-          const content = event.data.content;
-          if (typeof content === "string") {
-            setStreamingText((value) => `${value}${content}`);
-            updateAiRequestState((current) =>
-              current
-                ? {
-                    ...current,
-                    status: "streaming",
-                    stage: "streaming",
-                    generatedPartial: true,
-                    partialContent: `${streamingTextRef.current}${content}`,
-                  }
-                : current,
-            );
-          }
-        }
-        if (event.type === "tool_start") {
-          setStreamStatus("推理中");
-          updateAiRequestState((current) =>
-            current
-              ? {
-                  ...current,
-                  status: "tool_calling",
-                  stage: "tool_calling",
-                }
-              : current,
-          );
-          const id = String(event.data.id ?? `${event.sequence}`);
-          const name = String(event.data.name ?? "tool");
-          setStreamTools((items) => [
-            ...items,
-            { id, name, category: getToolCategory(name), status: "running", partial: "", },
-          ]);
-        }
-        if (event.type === "tool_delta") {
-          const id = String(event.data.id ?? "");
-          const partial = String(event.data.partial ?? "");
-          setStreamTools((items) =>
-            items.map((item) =>
-              id && item.id === id
-                ? { ...item, partial: `${item.partial}${partial}`.slice(-240) }
-                : item,
-            ),
-          );
-        }
-        if (event.type === "tool_done") {
-          const id = String(event.data.id ?? "");
-          setStreamTools((items) =>
-            items.map((item) => (id && item.id === id ? { ...item, status: "done" } : item)),
-          );
-        }
-        if (event.type === "sdk_result" || event.type === "assistant_message_saved") {
-          setStreamStatus("整理中");
-          updateAiRequestState((current) =>
-            current
-              ? {
-                  ...current,
-                  stage: "saving",
-                }
-              : current,
-          );
-        }
-        if (event.type === "agent_error") {
-          const message = event.data.message;
-          setStreamStatus(typeof message === "string" ? message : "推理失败");
-        }
-      }, {
-        signal: abortController.signal,
-        onConnected: () => {
-          updateAiRequestState((current) => {
-            if (!current) {
-              return current;
-            }
-            const timing = {
-              ...current.timing,
-              connectionEndAt: Date.now(),
-            };
-            return {
+      const task = await requestCreateAgentTask(
+        String(taskSessionId),
+        nextMessage,
+        summarizeSessionTitle(nextMessage),
+      );
+      activeTaskIdRef.current = task.task_id;
+      activeTaskSessionIdRef.current = taskSessionId;
+      lastTaskSeqRef.current = 0;
+      setRunningTasksBySessionId((current) =>
+        upsertRunningTaskMarker(current, taskSessionId, {
+          taskId: task.task_id,
+          status: task.status,
+          title: summarizeSessionTitle(nextMessage),
+        }),
+      );
+      saveActiveTaskId(user.id, task.task_id);
+      writeTaskIdToUrl(task.task_id);
+      setStreamStatus("排队中");
+      updateAiRequestState((current) =>
+        current
+          ? {
               ...current,
-              status: "reasoning",
-              stage: "reasoning",
-              timing,
-              metrics: calculateAiDurationMetrics(timing),
-            };
-          });
-        },
-        onFirstToken: () => {
-          updateAiRequestState((current) => {
-            if (!current || current.timing.firstTokenAt) {
-              return current;
+              status: "queued",
+              stage: "queued",
             }
-            const timing = {
-              ...current.timing,
-              firstTokenAt: Date.now(),
-            };
-            return {
-              ...current,
-              status: "streaming",
-              stage: "streaming",
-              timing,
-              metrics: calculateAiDurationMetrics(timing),
-              generatedPartial: true,
-            };
-          });
-        },
-      });
-      const data = await requestMessages(user.id, targetSessionId);
-      setMessages(data.items);
-      setStreamingText("");
-      setStreamTools([]);
-      setStreamStatus("");
-      updateAiRequestState(null);
+          : current,
+      );
+
+      const events = await requestAgentTaskEvents(task.task_id, 0);
+      events.items.forEach((item) => applyAgentTaskEvent(item, taskSessionId, task.task_id));
+      startTaskStream(task.task_id, taskSessionId);
+      taskStarted = true;
       setIsDraftSession(false);
       pendingLocalFailedMessageRef.current = null;
-      await loadProjects(targetSessionId);
+      await loadProjects(taskSessionId);
     } catch (error) {
       const currentAiState = aiRequestStateRef.current;
       const finalTiming = {
@@ -1103,11 +1578,13 @@ function WorkspacePage({
         setNotice(errorMessage);
       }
     } finally {
-      setIsSending(false);
       abortControllerRef.current = null;
-      setStreamingText("");
-      setStreamTools([]);
-      setStreamStatus("");
+      if (!taskStarted) {
+        setIsSending(false);
+        setStreamingText("");
+        setStreamTools([]);
+        setStreamStatus("");
+      }
     }
   };
 
@@ -1199,6 +1676,9 @@ function WorkspacePage({
                   type="button"
                   onClick={() => {
                     const nextSessionId = project.sessions[0]?.id ?? null;
+                    const runningTask = nextSessionId
+                      ? runningTasksBySessionId[nextSessionId]
+                      : null;
                     setActiveProjectId(project.id);
                     setActiveSessionId(nextSessionId);
                     setIsDraftSession(!nextSessionId);
@@ -1214,25 +1694,41 @@ function WorkspacePage({
                       activeSessionId: nextSessionId,
                       projectPaths: collectProjectPaths(projects, snapshot.projectPaths),
                     });
+                    if (runningTask) {
+                      void recoverTask(runningTask.taskId);
+                    }
                   }}
                 >
                   <h2>{project.name}</h2>
                   <small>{project.is_git_repo ? "Git" : "本地"}</small>
                 </button>
                 <div className="thread-list">
-                  {project.sessions.map((item) => (
-                    <button
-                      className={
-                        item.id === activeSessionId ? "thread-item active" : "thread-item"
-                      }
-                      key={item.id}
-                      type="button"
-                      onClick={() => handleSelectSession(project.id, item.id)}
-                    >
-                      <span>{item.title}</span>
-                      <small>{formatSessionTime(item.updated_at)}</small>
-                    </button>
-                  ))}
+                  {project.sessions.map((item) => {
+                    const runningTask = runningTasksBySessionId[item.id];
+                    return (
+                      <button
+                        className={
+                          item.id === activeSessionId ? "thread-item active" : "thread-item"
+                        }
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleSelectSession(project.id, item.id)}
+                      >
+                        <span className="thread-title">{item.title}</span>
+                        <span className="thread-meta">
+                          {runningTask ? (
+                            <span
+                              className="thread-running-spinner"
+                              aria-label="正在推理"
+                              title="正在推理"
+                            />
+                          ) : (
+                            <small>{formatSessionTime(item.updated_at)}</small>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
             ))}
@@ -1534,6 +2030,74 @@ function getToolCategory(name: string): ToolCategory {
     return "mcp";
   }
   return "tool";
+}
+
+function isTerminalTaskEvent(eventType: string) {
+  return eventType === "task_completed" || eventType === "task_failed" || eventType === "task_cancelled";
+}
+
+function formatTaskStatus(status: AgentTaskStatus) {
+  const labels: Record<AgentTaskStatus, string> = {
+    created: "已创建",
+    queued: "排队中",
+    running: "执行中",
+    completed: "已完成",
+    failed: "执行失败",
+    cancelling: "正在停止",
+    cancelled: "已停止",
+  };
+  return labels[status];
+}
+
+function applyToolCallEvent(
+  event: AgentTaskEvent,
+  setTools: (updater: (items: ToolStatus[]) => ToolStatus[]) => void,
+) {
+  const metadataType = String(event.metadata.type ?? "");
+  const id = String(event.metadata.id ?? `tool-${event.seq}`);
+  const name = String(event.metadata.name ?? "tool");
+
+  if (metadataType === "tool_start") {
+    setTools((items) => [
+      ...items,
+      {
+        id,
+        name,
+        category: getToolCategory(name),
+        status: "running",
+        partial: summarizeToolPayload(event.metadata.input),
+      },
+    ]);
+    return;
+  }
+
+  if (metadataType === "tool_delta") {
+    const partial = String(event.metadata.partial ?? event.content ?? "");
+    setTools((items) =>
+      items.map((item) =>
+        item.id === id ? { ...item, partial: `${item.partial}${partial}`.slice(-240) } : item,
+      ),
+    );
+    return;
+  }
+
+  if (metadataType === "tool_done") {
+    setTools((items) =>
+      items.map((item) => (item.id === id ? { ...item, status: "done" } : item)),
+    );
+    return;
+  }
+
+  setTools((items) => [
+    ...items,
+    {
+      id,
+      name,
+      category: getToolCategory(name),
+      status: "done",
+      partial: event.content ?? summarizeToolPayload(event.metadata),
+    },
+  ]);
 }
 
 function normalizeAiStage(value: unknown): AiRequestStage | null {
