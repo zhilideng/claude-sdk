@@ -96,26 +96,25 @@ class ClaudeCodeService:
                 )
 
         message_stream = aiter(query(prompt=formatted_prompt, options=options))
-        async with asyncio.timeout(self._settings.command_timeout):
-            try:
-                first_message = await asyncio.wait_for(
-                    anext(message_stream),
-                    timeout=self._settings.startup_timeout,
-                )
-            except TimeoutError as exc:
-                raise BizValidationError(
-                    f"推理连接超时（{self._settings.startup_timeout} 秒内未收到首个事件），"
-                    "请确认本地模型登录状态后重试。"
-                ) from exc
-            except StopAsyncIteration:
-                return
+        try:
+            first_message = await asyncio.wait_for(
+                anext(message_stream),
+                timeout=self._settings.startup_timeout,
+            )
+        except TimeoutError as exc:
+            raise BizValidationError(
+                f"推理连接超时（{self._settings.startup_timeout} 秒内未收到首个事件），"
+                "请确认本地模型登录状态后重试。"
+            ) from exc
+        except StopAsyncIteration:
+            return
 
-            async for event in emit_sdk_message(first_message):
+        async for event in emit_sdk_message(first_message):
+            yield event
+
+        async for message in message_stream:
+            async for event in emit_sdk_message(message):
                 yield event
-
-            async for message in message_stream:
-                async for event in emit_sdk_message(message):
-                    yield event
 
     async def run_session(
         self,
@@ -129,17 +128,18 @@ class ClaudeCodeService:
         tool_summary: list[dict[str, Any]] = []
         diff_summary: list[dict[str, Any]] = []
 
-        async for event in self.stream_session(
-            cwd=cwd,
-            prompt=prompt,
-            session_history=session_history,
-        ):
-            if event.type == "assistant_delta":
-                content_parts.append(str(event.data.get("content", "")))
-            elif event.type in {"tool_start", "tool_delta", "tool_done"}:
-                tool_summary.append({"type": event.type, **event.data})
-            elif event.type == "sdk_result":
-                diff_summary.append(event.data)
+        async with asyncio.timeout(self._settings.command_timeout):
+            async for event in self.stream_session(
+                cwd=cwd,
+                prompt=prompt,
+                session_history=session_history,
+            ):
+                if event.type == "assistant_delta":
+                    content_parts.append(str(event.data.get("content", "")))
+                elif event.type in {"tool_start", "tool_delta", "tool_done"}:
+                    tool_summary.append({"type": event.type, **event.data})
+                elif event.type == "sdk_result":
+                    diff_summary.append(event.data)
 
         content = "".join(content_parts).strip() or "推理完成，但没有返回文本内容。"
         return ClaudeCodeRunResult(

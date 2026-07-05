@@ -258,7 +258,7 @@ class ClaudeAgentSettings(BaseModel):
     enabled: bool = True  # 是否启用真实 Claude Agent SDK；false 时服务层返回禁用错误
     permission_mode: str = "bypassPermissions"  # 全能力开放：绕过工具审批
     include_partial_messages: bool = True  # 开启 StreamEvent 增量输出
-    command_timeout: int = Field(default=300, gt=0)  # 单次 agent 执行超时秒数
+    command_timeout: int = Field(default=300, gt=0)  # 非流式聚合接口执行超时秒数；流式/后台任务只限制首事件连接
     startup_timeout: int = Field(default=15, gt=0)  # 等待 SDK 首个事件的超时秒数，避免本地连接失败时长时间卡住
     default_cwd: str = "."  # 兼容旧配置；项目执行必须使用 Project.root_path，不再回退默认 cwd
     use_local_agent_relay: bool = True  # true=文件/命令工具经用户本机连接器执行，避免远端服务直接操作本地路径
