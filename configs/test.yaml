@@ -68,6 +68,8 @@ claude_agent:
   command_timeout: 300
   startup_timeout: 15
   default_cwd: /Users/zhili.deng/dzl-py/claude-sdk
+  use_local_agent_relay: true
+  local_agent_task_timeout: 120
   strict_mcp_config: false
   mcp_servers: {}
 

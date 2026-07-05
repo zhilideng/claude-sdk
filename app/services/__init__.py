@@ -5,6 +5,7 @@
 ORM 查询语句——查询细节封装在 repositories 层。
 """
 from app.services.user_service import UserService
+from app.services.local_agent_service import LocalAgentTaskHub
 from app.services.project_service import ProjectService, SessionService
 
-__all__ = ["UserService", "ProjectService", "SessionService"]
+__all__ = ["UserService", "ProjectService", "SessionService", "LocalAgentTaskHub"]

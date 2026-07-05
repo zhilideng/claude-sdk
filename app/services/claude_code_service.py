@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.core.settings import ClaudeAgentSettings
 from app.exceptions import BizValidationError
+from app.schemas.local_agent import LocalAgentTaskCreateIn
 from app.schemas.project import SessionMessageOut
+from app.services.local_agent_service import get_local_agent_hub
 
 
 class ClaudeCodeStreamEvent(BaseModel):
@@ -47,26 +51,16 @@ class ClaudeCodeService:
             raise BizValidationError("推理服务已禁用")
 
         self._prepare_environment()
-        resolved_cwd = self._resolve_cwd(cwd)
+        project_root = self._resolve_cwd(cwd)
         formatted_prompt = self._format_prompt(prompt, session_history)
 
         try:
-            from claude_agent_sdk import ClaudeAgentOptions, query
+            from claude_agent_sdk import query
+            options = self._build_options(project_root)
         except ImportError as exc:
             raise BizValidationError(
                 "推理服务依赖未安装，请先安装依赖后再重试"
             ) from exc
-
-        options = ClaudeAgentOptions(
-            tools={"type": "preset", "preset": "claude_code"},
-            permission_mode=self._settings.permission_mode,
-            include_partial_messages=self._settings.include_partial_messages,
-            include_hook_events=True,
-            cwd=resolved_cwd,
-            env=dict(os.environ),
-            mcp_servers=self._settings.mcp_servers,
-            strict_mcp_config=self._settings.strict_mcp_config,
-        )
 
         current_tool: dict[str, Any] | None = None
         has_text_delta = False
@@ -228,6 +222,182 @@ class ClaudeCodeService:
         if not cwd:
             raise BizValidationError("项目未绑定本地目录，请重新选择真实项目目录")
         return cwd
+
+    def _build_options(self, project_root: str) -> Any:
+        """构造 Claude Agent SDK options。"""
+        from claude_agent_sdk import ClaudeAgentOptions
+
+        if self._settings.use_local_agent_relay:
+            return ClaudeAgentOptions(
+                tools=[],
+                allowed_tools=["local_tool", "mcp__local_agent__local_tool"],
+                system_prompt=self._build_local_agent_system_prompt(),
+                permission_mode=self._settings.permission_mode,
+                include_partial_messages=self._settings.include_partial_messages,
+                include_hook_events=True,
+                cwd=self._resolve_sdk_cwd(),
+                env=dict(os.environ),
+                mcp_servers={
+                    "local_agent": self._build_local_agent_mcp_server(project_root),
+                },
+                strict_mcp_config=True,
+            )
+
+        return ClaudeAgentOptions(
+            tools={"type": "preset", "preset": "claude_code"},
+            permission_mode=self._settings.permission_mode,
+            include_partial_messages=self._settings.include_partial_messages,
+            include_hook_events=True,
+            cwd=project_root,
+            env=dict(os.environ),
+            mcp_servers=self._settings.mcp_servers,
+            strict_mcp_config=self._settings.strict_mcp_config,
+        )
+
+    def _resolve_sdk_cwd(self) -> str:
+        """返回远端 SDK 进程可用的工作目录。
+
+        local-agent relay 模式下，用户项目路径可能只存在于用户本机，
+        不能再作为远端 SDK 进程 cwd；此处仅选择服务端真实存在的目录启动 SDK。
+        """
+        configured = Path(self._settings.default_cwd).expanduser()
+        candidates = [
+            (
+                configured.resolve()
+                if configured.is_absolute()
+                else Path.cwd().joinpath(configured).resolve()
+            ),
+            Path.cwd().resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                return str(candidate)
+        return str(Path.cwd().resolve())
+
+    def _build_local_agent_mcp_server(self, project_root: str) -> dict[str, Any]:
+        """创建只负责转发到本地连接器的 SDK MCP Server。"""
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "ping_path",
+                        "list_tree",
+                        "shell",
+                        "read_file",
+                        "write_file",
+                        "apply_patch",
+                    ],
+                    "description": "要在用户本机项目目录下执行的动作",
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "动作参数，例如 shell 使用 args 或 command，write_file 使用 path/content",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600,
+                    "description": "本次动作的超时秒数",
+                },
+            },
+            "required": ["action"],
+        }
+
+        @tool(
+            "local_tool",
+            (
+                "Execute file, patch, directory listing, or shell actions through "
+                "the user's local claude-sdk agent. Always use this tool for project "
+                "filesystem and command operations."
+            ),
+            schema,
+        )
+        async def local_tool(args: dict[str, Any]) -> dict[str, Any]:
+            """把 Claude 工具调用转成本地连接器任务。"""
+            return await self._call_local_agent_tool(project_root, args)
+
+        return create_sdk_mcp_server("local_agent", tools=[local_tool])
+
+    async def _call_local_agent_tool(
+        self,
+        project_root: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """创建 local-agent 任务并等待用户本机脚本执行完成。"""
+        try:
+            action = str(args.get("action") or "").strip()
+            payload = args.get("payload") if isinstance(args.get("payload"), dict) else {}
+            timeout_seconds = self._resolve_local_agent_timeout(args)
+            task = await get_local_agent_hub().create_task(
+                LocalAgentTaskCreateIn(
+                    root_path=project_root,
+                    action=action,
+                    payload=payload,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            completed = await get_local_agent_hub().wait_task(
+                task.id,
+                timeout_seconds + 5,
+            )
+            data = {
+                "task_id": completed.id,
+                "status": completed.status,
+                "result": completed.result,
+                "error": completed.error,
+            }
+            return self._local_agent_tool_result(data, is_error=completed.status == "failed")
+        except Exception as exc:
+            message = exc.message if isinstance(exc, BizValidationError) else str(exc)
+            return self._local_agent_tool_result(
+                {
+                    "status": "failed",
+                    "error": message or exc.__class__.__name__,
+                },
+                is_error=True,
+            )
+
+    def _resolve_local_agent_timeout(self, args: dict[str, Any]) -> int:
+        """解析 local_tool 超时，非法值回落到配置默认值。"""
+        raw_timeout = args.get("timeout_seconds")
+        try:
+            timeout_seconds = (
+                int(raw_timeout)
+                if raw_timeout is not None
+                else self._settings.local_agent_task_timeout
+            )
+        except (TypeError, ValueError):
+            timeout_seconds = self._settings.local_agent_task_timeout
+        return min(max(timeout_seconds, 1), 3600)
+
+    @staticmethod
+    def _local_agent_tool_result(data: dict[str, Any], *, is_error: bool) -> dict[str, Any]:
+        """把本地连接器结果转成 MCP tool result。"""
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(data, ensure_ascii=False),
+                }
+            ],
+            "is_error": is_error,
+        }
+
+    @staticmethod
+    def _build_local_agent_system_prompt() -> str:
+        """构造 relay 模式下的系统提示。"""
+        return (
+            "你在远端 claude-sdk 服务中运行，不能直接读写用户电脑上的项目文件。"
+            "所有项目文件读取、写入、补丁应用、目录查看和 shell 命令执行，都必须调用 MCP 工具 local_tool。"
+            "local_tool 会自动在当前项目 root_path 下由用户本机连接器执行，不要让用户再提供 root_path。"
+            "可用 action 包括 ping_path、list_tree、shell、read_file、write_file、apply_patch。"
+            "写文件使用 action=write_file 且 payload 包含 path/content；执行命令优先使用 shell 的 payload.args 列表。"
+            "不要尝试使用服务器本机路径或内置 Bash/Read/Edit 工具。"
+        )
 
     @staticmethod
     def _format_prompt(prompt: str, session_history: list[SessionMessageOut]) -> str:

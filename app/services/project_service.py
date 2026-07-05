@@ -3,7 +3,7 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,8 @@ from app.repositories.dao import (
     UserRepository,
 )
 from app.repositories.models import Project, ProjectSession, SessionMessage
+from app.schemas.local_agent import LocalAgentTaskCreateIn, LocalAgentTaskOut
+from app.schemas.local_agent import ProjectLocalAgentTaskCreateIn
 from app.schemas.project import (
     ProjectImportData,
     ProjectImportIn,
@@ -31,6 +33,7 @@ from app.schemas.project import (
     SessionMessageOut,
 )
 from app.services.claude_code_service import ClaudeCodeService
+from app.services.local_agent_service import get_local_agent_hub
 from app.utils.path_guard import ensure_allowed_root, resolve_project_path
 from app.utils.path_guard import ensure_relative_path
 
@@ -89,15 +92,46 @@ def is_workspace_root_path(path: Path, settings: ProjectSettings) -> bool:
         return False
 
 
+def normalize_relay_root_path(input_path: str) -> str:
+    """校验并返回用户本机项目根路径字符串。
+
+    远端部署时该路径只在用户电脑上存在，服务端不能用 ``Path.exists()``
+    校验；这里只确认它是 POSIX 或 Windows 形式的绝对路径。
+    """
+    raw_path = input_path.strip()
+    if not raw_path:
+        raise BizValidationError("本地路径不能为空")
+    if not (
+        PurePosixPath(raw_path).is_absolute()
+        or PureWindowsPath(raw_path).is_absolute()
+    ):
+        raise BizValidationError("本地路径必须是绝对路径")
+    return raw_path
+
+
+def infer_project_name_from_root_path(root_path: str) -> str:
+    """从 POSIX/Windows 路径字符串推导项目名。"""
+    if "\\" in root_path or PureWindowsPath(root_path).drive:
+        return PureWindowsPath(root_path).name
+    return PurePosixPath(root_path).name
+
+
 class ProjectService:
     """项目业务服务。"""
 
-    def __init__(self, session: AsyncSession, settings: ProjectSettings) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        settings: ProjectSettings,
+        *,
+        use_local_agent_relay: bool = False,
+    ) -> None:
         self._project_repo = ProjectRepository(session)
         self._session_repo = ProjectSessionRepository(session)
         self._message_repo = SessionMessageRepository(session)
         self._user_repo = UserRepository(session)
         self._settings = settings
+        self._use_local_agent_relay = use_local_agent_relay
 
     async def list_projects(self, user_id: int) -> ProjectListData:
         """查询用户项目列表。"""
@@ -116,13 +150,17 @@ class ProjectService:
         is_git_repo = False
 
         if payload.root_path:
-            root = resolve_project_path(payload.root_path)
-            ensure_allowed_root(root, self._settings.allowed_roots)
-            if is_workspace_root_path(root, self._settings):
-                raise BizValidationError("不能把服务端临时工作区作为项目目录，请重新选择真实文件夹")
-            project_root_path = str(root)
-            is_git_repo = (root / ".git").exists()
-            project_name = project_name or root.name
+            if self._use_local_agent_relay:
+                project_root_path = normalize_relay_root_path(payload.root_path)
+                project_name = project_name or infer_project_name_from_root_path(project_root_path)
+            else:
+                root = resolve_project_path(payload.root_path)
+                ensure_allowed_root(root, self._settings.allowed_roots)
+                if is_workspace_root_path(root, self._settings):
+                    raise BizValidationError("不能把服务端临时工作区作为项目目录，请重新选择真实文件夹")
+                project_root_path = str(root)
+                is_git_repo = (root / ".git").exists()
+                project_name = project_name or root.name
             existing_project = await self._project_repo.get_by_user_and_path(
                 payload.user_id,
                 project_root_path,
@@ -174,6 +212,33 @@ class ProjectService:
             root_path=project.root_path,
             display_path=self._display_path(project.root_path),
             is_git_repo=project.is_git_repo,
+        )
+
+    async def create_local_agent_task(
+        self,
+        project_id: int,
+        payload: ProjectLocalAgentTaskCreateIn,
+    ) -> LocalAgentTaskOut:
+        """基于项目已保存 root_path 创建本地工具中继任务。"""
+        project = await self._get_owned_project(project_id, payload.user_id)
+        if not project.root_path:
+            raise BizValidationError("项目未绑定本地绝对路径，请重新导入项目目录")
+
+        if self._use_local_agent_relay:
+            root_path = normalize_relay_root_path(project.root_path)
+        else:
+            root = resolve_project_path(project.root_path)
+            if is_workspace_root_path(root, self._settings):
+                raise BizValidationError("项目绑定的是服务端临时目录，请重新选择真实项目目录")
+            root_path = str(root)
+
+        return await get_local_agent_hub().create_task(
+            LocalAgentTaskCreateIn(
+                root_path=root_path,
+                action=payload.action,
+                payload=payload.payload,
+                timeout_seconds=payload.timeout_seconds,
+            )
         )
 
     async def create_session(
@@ -230,16 +295,19 @@ class ProjectService:
             updated_at=project.updated_at,
         )
 
-    @staticmethod
-    def _display_path(root_path: str | None) -> str | None:
+    def _display_path(self, root_path: str | None) -> str | None:
         """生成适合前端显示的路径。"""
         if not root_path:
             return None
+        if self._use_local_agent_relay:
+            return root_path
         return str(Path(root_path).expanduser())
 
     def _is_workspace_root_project(self, project: Project) -> bool:
         """判断项目是否误绑定到服务端临时工作区。"""
         if not project.root_path:
+            return False
+        if self._use_local_agent_relay:
             return False
         return is_workspace_root_path(resolve_project_path(project.root_path), self._settings)
 
@@ -557,16 +625,21 @@ class SessionService:
             raise BizAuthError("无权访问该会话")
 
         if session.project.root_path:
-            path = resolve_project_path(session.project.root_path)
-            if is_workspace_root_path(path, self._settings):
-                raise BizValidationError("项目绑定的是服务端临时目录，请重新选择真实项目目录")
-            ensure_allowed_root(path, self._allowed_execution_roots())
+            if self._claude_agent_settings.use_local_agent_relay:
+                normalize_relay_root_path(session.project.root_path)
+            else:
+                path = resolve_project_path(session.project.root_path)
+                if is_workspace_root_path(path, self._settings):
+                    raise BizValidationError("项目绑定的是服务端临时目录，请重新选择真实项目目录")
+                ensure_allowed_root(path, self._allowed_execution_roots())
         return session
 
     def _resolve_session_project_root(self, session: ProjectSession) -> str:
         """解析会话绑定的项目根目录，禁止回落到服务默认 cwd。"""
         if not session.project.root_path:
             raise BizValidationError("项目未绑定本地绝对路径，请重新导入项目目录")
+        if self._claude_agent_settings.use_local_agent_relay:
+            return normalize_relay_root_path(session.project.root_path)
         path = resolve_project_path(session.project.root_path)
         if is_workspace_root_path(path, self._settings):
             raise BizValidationError("项目绑定的是服务端临时目录，请重新选择真实项目目录")

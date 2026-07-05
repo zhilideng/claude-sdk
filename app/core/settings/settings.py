@@ -261,6 +261,8 @@ class ClaudeAgentSettings(BaseModel):
     command_timeout: int = Field(default=300, gt=0)  # 单次 agent 执行超时秒数
     startup_timeout: int = Field(default=15, gt=0)  # 等待 SDK 首个事件的超时秒数，避免本地连接失败时长时间卡住
     default_cwd: str = "."  # 兼容旧配置；项目执行必须使用 Project.root_path，不再回退默认 cwd
+    use_local_agent_relay: bool = True  # true=文件/命令工具经用户本机连接器执行，避免远端服务直接操作本地路径
+    local_agent_task_timeout: int = Field(default=120, gt=0, le=3600)  # local_tool 单次等待本机脚本执行的默认超时
     strict_mcp_config: bool = False  # false=允许合并项目/用户/插件 MCP 配置
     mcp_servers: dict[str, dict] = Field(default_factory=dict)  # 传给 SDK 的 MCP server 配置
 
