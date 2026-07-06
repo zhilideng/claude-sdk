@@ -21,6 +21,7 @@ from app.repositories.dao import (
 from app.repositories.dao.agent_task import TERMINAL_TASK_STATUSES
 from app.repositories.models import AgentTask, ProjectSession, SessionMessage
 from app.schemas.project import SessionMessageOut
+from app.services.agent_asset_service import get_or_create_session_asset_snapshot
 from app.services.claude_code_service import ClaudeCodeService
 from app.services.project_service import (
     ProjectService,
@@ -146,6 +147,7 @@ async def run_agent_task(task_id: str) -> None:
             raise
         except Exception as exc:
             await repo.rollback()
+            logger.exception("后台任务执行失败 | task_id={} | err={}", task_id, exc)
             task = await repo.get_by_task_id(task_id)
             if task is None:
                 return
@@ -192,13 +194,18 @@ async def execute_claude_agent_task(
     diff_summary: list[dict[str, Any]] = []
     history = await message_repo.list_by_session(session_id)
     history_out = [_to_message_out(item) for item in history]
-    claude_code = ClaudeCodeService(settings.claude_agent)
+    claude_code = ClaudeCodeService(settings.claude_agent, settings.agent_platform)
+    snapshot = await get_or_create_session_asset_snapshot(
+        session_id,
+        settings.agent_platform,
+    )
 
     try:
         async for sdk_event in claude_code.stream_session(
             cwd=cwd,
             prompt=task.prompt,
             session_history=history_out,
+            platform_capabilities=snapshot.capabilities,
         ):
             if sdk_event.type == "assistant_delta":
                 content = str(sdk_event.data.get("content", ""))

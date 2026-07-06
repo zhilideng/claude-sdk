@@ -10,10 +10,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.core.settings import ClaudeAgentSettings
+from app.core.settings import AgentPlatformSettings, ClaudeAgentSettings
 from app.exceptions import BizValidationError
 from app.schemas.local_agent import LocalAgentTaskCreateIn
 from app.schemas.project import SessionMessageOut
+from app.services.agent_platform_service import AgentPlatformCapabilities
+from app.services.agent_platform_service import load_agent_platform_capabilities
 from app.services.local_agent_service import get_local_agent_hub
 
 
@@ -36,8 +38,13 @@ class ClaudeCodeRunResult(BaseModel):
 class ClaudeCodeService:
     """Claude Agent SDK 统一调用入口。"""
 
-    def __init__(self, settings: ClaudeAgentSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: ClaudeAgentSettings | None = None,
+        agent_platform_settings: AgentPlatformSettings | None = None,
+    ) -> None:
         self._settings = settings or ClaudeAgentSettings()
+        self._agent_platform_settings = agent_platform_settings or AgentPlatformSettings()
 
     async def stream_session(
         self,
@@ -45,6 +52,7 @@ class ClaudeCodeService:
         cwd: str | None,
         prompt: str,
         session_history: list[SessionMessageOut],
+        platform_capabilities: AgentPlatformCapabilities | None = None,
     ) -> AsyncIterator[ClaudeCodeStreamEvent]:
         """流式运行一次 agent 会话请求。"""
         if not self._settings.enabled:
@@ -56,7 +64,7 @@ class ClaudeCodeService:
 
         try:
             from claude_agent_sdk import query
-            options = self._build_options(project_root)
+            options = await self._build_options(project_root, platform_capabilities)
         except ImportError as exc:
             raise BizValidationError(
                 "推理服务依赖未安装，请先安装依赖后再重试"
@@ -122,6 +130,7 @@ class ClaudeCodeService:
         cwd: str | None,
         prompt: str,
         session_history: list[SessionMessageOut],
+        platform_capabilities: AgentPlatformCapabilities | None = None,
     ) -> ClaudeCodeRunResult:
         """运行一次会话请求，并聚合为兼容旧接口的完整结果。"""
         content_parts: list[str] = []
@@ -133,6 +142,7 @@ class ClaudeCodeService:
                 cwd=cwd,
                 prompt=prompt,
                 session_history=session_history,
+                platform_capabilities=platform_capabilities,
             ):
                 if event.type == "assistant_delta":
                     content_parts.append(str(event.data.get("content", "")))
@@ -223,36 +233,122 @@ class ClaudeCodeService:
             raise BizValidationError("项目未绑定本地目录，请重新选择真实项目目录")
         return cwd
 
-    def _build_options(self, project_root: str) -> Any:
+    async def _build_options(
+        self,
+        project_root: str,
+        platform_capabilities: AgentPlatformCapabilities | None = None,
+    ) -> Any:
         """构造 Claude Agent SDK options。"""
         from claude_agent_sdk import ClaudeAgentOptions
 
+        capabilities = platform_capabilities or await load_agent_platform_capabilities(
+            self._agent_platform_settings
+        )
+        platform_mcp_servers = self._capability_mcp_servers(capabilities)
+        platform_allowed_tools = self._capability_allowed_tools(capabilities)
+        platform_prompt = self._render_capabilities_system_prompt(capabilities)
+        sdk_env = self._build_sdk_env()
+
         if self._settings.use_local_agent_relay:
+            mcp_servers = {
+                "local_agent": self._build_local_agent_mcp_server(project_root),
+                **{
+                    name: config
+                    for name, config in platform_mcp_servers.items()
+                    if name != "local_agent"
+                },
+            }
             return ClaudeAgentOptions(
                 tools=[],
-                allowed_tools=["local_tool", "mcp__local_agent__local_tool"],
-                system_prompt=self._build_local_agent_system_prompt(),
+                allowed_tools=[
+                    "local_tool",
+                    "mcp__local_agent__local_tool",
+                    *platform_allowed_tools,
+                ],
+                system_prompt=self._join_system_prompts(
+                    self._build_local_agent_system_prompt(),
+                    platform_prompt,
+                ),
                 permission_mode=self._settings.permission_mode,
                 include_partial_messages=self._settings.include_partial_messages,
                 include_hook_events=True,
                 cwd=self._resolve_sdk_cwd(),
-                env=dict(os.environ),
-                mcp_servers={
-                    "local_agent": self._build_local_agent_mcp_server(project_root),
-                },
+                env=sdk_env,
+                mcp_servers=mcp_servers,
                 strict_mcp_config=True,
+                setting_sources=None,
+                skills=None,
+                extra_args={"disable-slash-commands": None},
             )
 
         return ClaudeAgentOptions(
-            tools={"type": "preset", "preset": "claude_code"},
+            tools=[],
+            allowed_tools=platform_allowed_tools,
+            system_prompt=platform_prompt,
             permission_mode=self._settings.permission_mode,
             include_partial_messages=self._settings.include_partial_messages,
             include_hook_events=True,
             cwd=project_root,
-            env=dict(os.environ),
-            mcp_servers=self._settings.mcp_servers,
-            strict_mcp_config=self._settings.strict_mcp_config,
+            env=sdk_env,
+            mcp_servers=platform_mcp_servers,
+            strict_mcp_config=True,
+            setting_sources=None,
+            skills=None,
+            extra_args={"disable-slash-commands": None},
         )
+
+    @staticmethod
+    def _capability_mcp_servers(capabilities: Any) -> dict[str, Any]:
+        """读取平台 MCP Server 配置，兼容测试替身对象。"""
+        value = getattr(capabilities, "mcp_servers", {})
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _capability_allowed_tools(capabilities: Any) -> list[str]:
+        """读取平台 allowed_tools，兼容测试替身对象。"""
+        value = getattr(capabilities, "allowed_tools", [])
+        return [str(item) for item in value] if isinstance(value, list) else []
+
+    @staticmethod
+    def _render_capabilities_system_prompt(capabilities: Any) -> str:
+        """渲染平台能力提示词，兼容正式模型与测试替身对象。"""
+        renderer = getattr(capabilities, "render_system_prompt", None)
+        if callable(renderer):
+            return str(renderer())
+
+        parts: list[str] = []
+        system_prompt = str(getattr(capabilities, "system_prompt", "") or "").strip()
+        if system_prompt:
+            parts.append(system_prompt)
+        skill_prompts = getattr(capabilities, "skill_prompts", []) or []
+        for skill in skill_prompts:
+            if isinstance(skill, dict):
+                name = str(skill.get("name") or "")
+                description = str(skill.get("description") or "")
+                content = str(skill.get("content") or skill.get("prompt") or "")
+            else:
+                name = str(getattr(skill, "name", "") or "")
+                description = str(getattr(skill, "description", "") or "")
+                content = str(getattr(skill, "content", "") or "")
+            section = [f"【Skill: {name}】"]
+            if description:
+                section.append(f"描述：{description}")
+            if content:
+                section.append(content)
+            parts.append("\n".join(item for item in section if item))
+        return "\n\n".join(part for part in parts if part.strip())
+
+    @staticmethod
+    def _join_system_prompts(*parts: str) -> str:
+        """拼接多个系统提示片段。"""
+        return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+    @staticmethod
+    def _build_sdk_env() -> dict[str, str]:
+        """构造 SDK 子进程环境变量，保留认证并移除桌面入口噪音。"""
+        env = dict(os.environ)
+        env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        return env
 
     def _resolve_sdk_cwd(self) -> str:
         """返回远端 SDK 进程可用的工作目录。

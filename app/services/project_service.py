@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.settings import ClaudeAgentSettings, ProjectSettings
+from app.core.settings import AgentPlatformSettings, ClaudeAgentSettings, ProjectSettings
 from app.exceptions import BizAuthError, BizNotFoundError, BizValidationError
 from app.repositories.dao import (
     ProjectRepository,
@@ -33,6 +33,9 @@ from app.schemas.project import (
     SessionMessageOut,
 )
 from app.services.claude_code_service import ClaudeCodeService
+from app.services.agent_asset_service import get_or_create_session_asset_snapshot
+from app.services.agent_asset_service import create_session_asset_snapshot
+from app.services.agent_asset_service import AgentAssetSnapshotOut
 from app.services.local_agent_service import get_local_agent_hub
 from app.utils.path_guard import ensure_allowed_root, resolve_project_path
 from app.utils.path_guard import ensure_relative_path
@@ -125,6 +128,7 @@ class ProjectService:
         settings: ProjectSettings,
         *,
         use_local_agent_relay: bool = False,
+        agent_platform_settings: AgentPlatformSettings | None = None,
     ) -> None:
         self._project_repo = ProjectRepository(session)
         self._session_repo = ProjectSessionRepository(session)
@@ -132,6 +136,7 @@ class ProjectService:
         self._user_repo = UserRepository(session)
         self._settings = settings
         self._use_local_agent_relay = use_local_agent_relay
+        self._agent_platform_settings = agent_platform_settings or AgentPlatformSettings()
 
     async def list_projects(self, user_id: int) -> ProjectListData:
         """查询用户项目列表。"""
@@ -253,6 +258,7 @@ class ProjectService:
             title=payload.title.strip(),
         )
         await self._session_repo.commit()
+        await create_session_asset_snapshot(session.id, self._agent_platform_settings)
         return ProjectSessionOut.model_validate(session)
 
     async def list_sessions(self, project_id: int, user_id: int) -> list[ProjectSessionOut]:
@@ -328,19 +334,37 @@ class SessionService:
         session: AsyncSession,
         settings: ProjectSettings,
         claude_agent_settings: ClaudeAgentSettings | None = None,
+        agent_platform_settings: AgentPlatformSettings | None = None,
     ) -> None:
         self._session_repo = ProjectSessionRepository(session)
         self._message_repo = SessionMessageRepository(session)
         self._user_repo = UserRepository(session)
         self._settings = settings
         self._claude_agent_settings = claude_agent_settings or ClaudeAgentSettings()
-        self._claude_code = ClaudeCodeService(self._claude_agent_settings)
+        self._agent_platform_settings = agent_platform_settings or AgentPlatformSettings()
+        self._claude_code = ClaudeCodeService(
+            self._claude_agent_settings,
+            self._agent_platform_settings,
+        )
 
     async def list_messages(self, session_id: int, user_id: int) -> SessionMessageListData:
         """查询会话消息列表。"""
         await self._get_owned_session(session_id, user_id)
         messages = await self._message_repo.list_by_session(session_id)
         return SessionMessageListData(items=[self._to_message_out(item) for item in messages])
+
+    async def get_session_assets(
+        self,
+        session_id: int,
+        user_id: int,
+    ) -> AgentAssetSnapshotOut:
+        """查询当前会话绑定的 Agent 平台资产快照。"""
+        await self._get_owned_session(session_id, user_id)
+        snapshot = await get_or_create_session_asset_snapshot(
+            session_id,
+            self._agent_platform_settings,
+        )
+        return snapshot.to_out()
 
     async def send_message(
         self,
@@ -366,11 +390,16 @@ class SessionService:
 
         history = await self._message_repo.list_by_session(session_id)
         history_out = [self._to_message_out(item) for item in history]
+        snapshot = await get_or_create_session_asset_snapshot(
+            session_id,
+            self._agent_platform_settings,
+        )
         try:
             result = await self._claude_code.run_session(
                 cwd=project_root_path,
                 prompt=payload.content.strip(),
                 session_history=history_out,
+                platform_capabilities=snapshot.capabilities,
             )
             assistant_message = await self._message_repo.create_message(
                 session_id=session_id,
@@ -462,11 +491,16 @@ class SessionService:
 
         history = await self._message_repo.list_by_session(session_id)
         history_out = [self._to_message_out(item) for item in history]
+        snapshot = await get_or_create_session_asset_snapshot(
+            session_id,
+            self._agent_platform_settings,
+        )
         try:
             async for sdk_event in self._claude_code.stream_session(
                 cwd=project_root_path,
                 prompt=prompt,
                 session_history=history_out,
+                platform_capabilities=snapshot.capabilities,
             ):
                 if sdk_event.type == "assistant_delta":
                     content_parts.append(str(sdk_event.data.get("content", "")))

@@ -1,0 +1,48 @@
+{
+  "asset_version": "mock-v1",
+  "mcp": {
+    "mcpServers": {
+      "mock-tool": {
+        "type": "stdio",
+        "command": "python",
+        "args": ["scripts/mock_mcp_server.py"],
+        "env": {
+          "NODE_ENV": "development"
+        },
+        "tools": [
+          {
+            "name": "echo",
+            "description": "返回输入内容",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": ["text"]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "skills": [
+    {
+      "id": "project-review",
+      "name": "老项目接手盘点 Skill",
+      "version": "1.0.0",
+      "description": "用于分析老项目结构、功能、环境和运行方式",
+      "file_url": "/mock-platform/skills/project-review.md",
+      "enabled": true
+    },
+    {
+      "id": "mcp-dev",
+      "name": "MCP 开发 Skill",
+      "version": "1.0.0",
+      "description": "用于指导 MCP Server 和 MCP Client 开发",
+      "file_url": "/mock-platform/skills/mcp-dev.md",
+      "enabled": true
+    }
+  ]
+}

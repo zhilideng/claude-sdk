@@ -22,8 +22,31 @@ async def list_messages(
 ) -> dict:
     """查询会话消息列表。"""
     settings = get_settings()
-    service = SessionService(db, settings.projects, settings.claude_agent)
+    service = SessionService(
+        db,
+        settings.projects,
+        settings.claude_agent,
+        settings.agent_platform,
+    )
     data = await service.list_messages(session_id, user_id)
+    return ApiResponse.ok(data).to_payload()
+
+
+@router.get("/{session_id}/assets")
+async def get_session_assets(
+    session_id: int,
+    user_id: int = Query(..., ge=1, description="当前用户 id"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """查询当前会话加载的 MCP 与 Skill 资产快照。"""
+    settings = get_settings()
+    service = SessionService(
+        db,
+        settings.projects,
+        settings.claude_agent,
+        settings.agent_platform,
+    )
+    data = await service.get_session_assets(session_id, user_id)
     return ApiResponse.ok(data).to_payload()
 
 
@@ -35,7 +58,12 @@ async def send_message(
 ) -> dict:
     """发送用户消息并触发 Claude Code SDK。"""
     settings = get_settings()
-    service = SessionService(db, settings.projects, settings.claude_agent)
+    service = SessionService(
+        db,
+        settings.projects,
+        settings.claude_agent,
+        settings.agent_platform,
+    )
     data = await service.send_message(session_id, payload)
     return ApiResponse.ok(data).to_payload()
 
@@ -48,7 +76,12 @@ async def stream_message(
 ) -> StreamingResponse:
     """发送用户消息并以 SSE 流式返回推理过程。"""
     settings = get_settings()
-    service = SessionService(db, settings.projects, settings.claude_agent)
+    service = SessionService(
+        db,
+        settings.projects,
+        settings.claude_agent,
+        settings.agent_platform,
+    )
 
     async def event_generator():
         """生成 SSE 文本帧。"""

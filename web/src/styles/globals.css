@@ -643,6 +643,88 @@ button {
   line-height: 1.5;
 }
 
+.asset-debug-panel {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 820px);
+  margin: 0 0 18px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--color-border-light);
+  border-bottom: 1px solid var(--color-border-light);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.asset-debug-heading,
+.asset-debug-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.asset-debug-heading strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.asset-debug-heading span,
+.asset-debug-meta span,
+.asset-debug-grid small,
+.asset-debug-grid em,
+.asset-debug-label,
+.asset-debug-error {
+  color: var(--color-text-muted);
+}
+
+.asset-debug-meta span,
+.asset-debug-grid small,
+.asset-debug-grid em {
+  overflow-wrap: anywhere;
+}
+
+.asset-debug-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.asset-debug-grid div,
+.asset-debug-grid ul {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.asset-debug-grid ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.asset-debug-grid li {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.asset-debug-grid b {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.asset-debug-grid p,
+.asset-debug-error {
+  margin: 0;
+}
+
+.asset-debug-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .message-error-row {
   display: flex;
   width: min(100%, 760px);
@@ -1890,6 +1972,10 @@ button {
 
   .assistant-message {
     font-size: 14px;
+  }
+
+  .asset-debug-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .user-question {

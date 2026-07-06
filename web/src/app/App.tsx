@@ -157,6 +157,40 @@ type AgentTaskRunningListData = {
   items: AgentTaskRunningItem[];
 };
 
+type AgentAssetTool = {
+  name: string;
+  full_name: string;
+  description: string;
+};
+
+type AgentAssetMcpServer = {
+  name: string;
+  status: string;
+  tools: AgentAssetTool[];
+  error_message: string | null;
+};
+
+type AgentAssetSkill = {
+  id: string;
+  name: string;
+  version: string;
+  status: string;
+  description: string;
+  error_message: string | null;
+};
+
+type SessionAssetData = {
+  session_id: number;
+  asset_snapshot_id: string;
+  asset_version: string;
+  app_code: string;
+  scene: string;
+  mcp_servers: AgentAssetMcpServer[];
+  skills: AgentAssetSkill[];
+  errors: string[];
+  created_at: string;
+};
+
 type AgentTaskStreamOptions = {
   onConnected?: () => void;
   onReconnect?: (delayMs: number) => void;
@@ -493,6 +527,15 @@ async function requestMessages(
   );
 }
 
+async function requestSessionAssets(
+  userId: number,
+  sessionId: number,
+): Promise<SessionAssetData> {
+  return requestJson<SessionAssetData>(
+    `/v1/sessions/${sessionId}/assets?user_id=${userId}`,
+  );
+}
+
 async function requestCreateAgentTask(
   conversationId: string,
   prompt: string,
@@ -825,11 +868,13 @@ function WorkspacePage({
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
+  const [sessionAssets, setSessionAssets] = useState<SessionAssetData | null>(null);
   const [notice, setNotice] = useState("");
   const [composerText, setComposerText] = useState("");
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [isLoadingAssets, setIsLoadingAssets] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isDraftSession, setIsDraftSession] = useState(false);
   const [streamingText, setStreamingText] = useState("");
@@ -1000,6 +1045,38 @@ function WorkspacePage({
       }
     };
     void loadMessages();
+  }, [activeSessionId, user.id]);
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSessionAssets(null);
+      setIsLoadingAssets(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingAssets(true);
+    const loadAssets = async () => {
+      try {
+        const data = await requestSessionAssets(user.id, activeSessionId);
+        if (!cancelled) {
+          setSessionAssets(data);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSessionAssets(null);
+          setNotice(error instanceof Error ? error.message : "资产加载失败");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingAssets(false);
+        }
+      }
+    };
+    void loadAssets();
+    return () => {
+      cancelled = true;
+    };
   }, [activeSessionId, user.id]);
 
   const handleSelectSession = (projectId: number, sessionId: number) => {
@@ -1788,8 +1865,10 @@ function WorkspacePage({
             <EmptyProjectPrompt
               project={activeProject}
               activeSession={activeSession}
+              assets={sessionAssets}
               canCompose={canCompose}
               composerText={composerText}
+              isLoadingAssets={isLoadingAssets}
               isSending={isSending}
               onChange={setComposerText}
               onSubmit={handleSendMessage}
@@ -1802,6 +1881,9 @@ function WorkspacePage({
               {!activeProject ? <EmptyWorkspace onCreate={() => setIsCreateModalOpen(true)} /> : null}
 
               {notice ? <p className="mock-status">{notice}</p> : null}
+              {activeSession || isLoadingAssets ? (
+                <SessionAssetPanel assets={sessionAssets} isLoading={isLoadingAssets} />
+              ) : null}
 
               {messages.length > 0 ? (
                 <div className="local-message-list">
@@ -1885,8 +1967,10 @@ function WorkspacePage({
 function EmptyProjectPrompt({
   project,
   activeSession,
+  assets,
   canCompose,
   composerText,
+  isLoadingAssets,
   isSending,
   notice,
   onChange,
@@ -1896,8 +1980,10 @@ function EmptyProjectPrompt({
 }: {
   project: Project;
   activeSession: ProjectSession | null;
+  assets: SessionAssetData | null;
   canCompose: boolean;
   composerText: string;
+  isLoadingAssets: boolean;
   isSending: boolean;
   notice: string;
   onChange: (value: string) => void;
@@ -1925,6 +2011,9 @@ function EmptyProjectPrompt({
           <span>▱ 本地模式⌄</span>
           <span>⌘ main⌄</span>
         </div>
+        {activeSession || isLoadingAssets ? (
+          <SessionAssetPanel assets={assets} isLoading={isLoadingAssets} />
+        ) : null}
         {notice ? <p className="mock-status">{notice}</p> : null}
       </div>
     </section>
@@ -2001,6 +2090,82 @@ function EmptyWorkspace({ onCreate }: { onCreate: () => void }) {
         使用现有文件夹
       </button>
     </div>
+  );
+}
+
+function SessionAssetPanel({
+  assets,
+  isLoading,
+}: {
+  assets: SessionAssetData | null;
+  isLoading: boolean;
+}) {
+  if (isLoading && !assets) {
+    return (
+      <section className="asset-debug-panel" aria-label="当前能力资产">
+        <div className="asset-debug-heading">
+          <strong>当前能力资产</strong>
+          <span>加载中</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (!assets) {
+    return null;
+  }
+
+  return (
+    <section className="asset-debug-panel" aria-label="当前能力资产">
+      <div className="asset-debug-heading">
+        <strong>当前能力资产</strong>
+        <span>{assets.asset_version}</span>
+      </div>
+      <div className="asset-debug-meta">
+        <span>快照 {assets.asset_snapshot_id}</span>
+        <span>{assets.app_code}</span>
+        <span>{assets.scene}</span>
+      </div>
+      <div className="asset-debug-grid">
+        <div>
+          <span className="asset-debug-label">MCP</span>
+          {assets.mcp_servers.length > 0 ? (
+            <ul>
+              {assets.mcp_servers.map((server) => (
+                <li key={server.name}>
+                  <b>{server.name}</b>
+                  <small>{server.status}</small>
+                  {server.tools.length > 0 ? (
+                    <em>{server.tools.map((tool) => tool.full_name).join(", ")}</em>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>无 MCP</p>
+          )}
+        </div>
+        <div>
+          <span className="asset-debug-label">Skills</span>
+          {assets.skills.length > 0 ? (
+            <ul>
+              {assets.skills.map((skill) => (
+                <li key={skill.id || skill.name}>
+                  <b>{skill.name}</b>
+                  <small>{skill.version}</small>
+                  <em>{skill.status}</em>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>无 Skill</p>
+          )}
+        </div>
+      </div>
+      {assets.errors.length > 0 ? (
+        <p className="asset-debug-error">{assets.errors.join("；")}</p>
+      ) : null}
+    </section>
   );
 }
 

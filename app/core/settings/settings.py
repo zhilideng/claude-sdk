@@ -20,6 +20,7 @@
 - ``CorsSettings`` —— 跨域配置（origins/methods/headers/credentials/expose_headers/max_age；dev/test 全放行、prod 收敛白名单）；
 - ``LlmProviderConfig`` / ``LlmSettings`` —— LLM 网关配置（Provider 统一走 OpenAI 兼容端点；api_key 为 SecretStr 仅经环境变量注入）。
 - ``SkillSettings`` —— skill 注册中心配置（扫描根目录、总开关、懒加载缓存）。
+- ``AgentPlatformSettings`` —— Agent 平台能力配置（MCP/Skill 统一来源）。
 - ``ProjectSettings`` —— 本地项目导入配置（允许根目录、SDK 超时）。
 - ``ClaudeAgentSettings`` —— Claude Agent SDK 配置（全能力开放 + SSE 流式输出）。
 
@@ -230,6 +231,24 @@ class SkillSettings(BaseModel):
     enabled: bool = True  # 总开关；false 时注册中心空运行
     base_dir: str = "app/skills"  # skill 内容根目录（相对项目根）
     cache_loaded: bool = True  # 是否缓存懒加载的 SkillBundle
+
+
+class AgentPlatformSettings(BaseModel):
+    """Agent 能力平台配置段（对应 yaml 的 ``agent_platform`` 段）。
+
+    该段控制 Claude Agent 运行时可见的 MCP 与 Skill 来源。MVP 阶段默认
+    使用仓库内 mock 数据跑通链路；接真实平台时只需配置 ``base_url`` 与
+    ``capabilities_path``，认证令牌经 ``AGENT_PLATFORM_TOKEN`` 注入。
+    """
+
+    enabled: bool = True  # 总开关；false 时返回空能力，不回退服务器本地 MCP/Skill
+    app_code: str = "codex-web"  # 平台应用编码
+    scene: str = "default"  # 平台场景编码
+    base_url: str = ""  # 真实平台根地址；为空时读取本地 mock 数据
+    capabilities_path: str = "/mock/internal-agent-assets"  # 平台资产接口路径
+    timeout: float = Field(default=5.0, gt=0)  # 拉取平台资产超时秒数
+    max_skills: int = Field(default=20, gt=0)  # 单次最多加载 Skill 数
+    max_skill_size_bytes: int = Field(default=1024 * 1024, gt=0)  # 单个 Skill 最大字节数
 
 
 class ProjectSettings(BaseModel):

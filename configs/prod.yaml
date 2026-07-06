@@ -62,6 +62,16 @@ skills:
   base_dir: app/skills  # skill 内容根目录（相对项目根；生产可经 SKILLS__BASE_DIR 挂载覆盖）
   cache_loaded: true  # 是否缓存懒加载的 SkillBundle
 
+agent_platform:
+  enabled: true  # 生产应通过 AGENT_PLATFORM__BASE_URL 或 yaml 挂载配置真实平台地址
+  app_code: codex-web
+  scene: default
+  base_url: ""  # 生产真值建议经环境变量覆盖，留空时仅使用本地 mock 兜底
+  capabilities_path: /mock/internal-agent-assets
+  timeout: 5.0
+  max_skills: 20
+  max_skill_size_bytes: 1048576
+
 projects:
   # 生产必须经 PROJECTS__ALLOWED_ROOTS 覆盖为真实受控目录，禁止放开到系统根目录。
   allowed_roots:

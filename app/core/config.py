@@ -22,6 +22,7 @@ from pydantic_settings import (
 # 各配置段模型统一收纳于 settings/ 包，按文件拆分避免本文件臃肿；
 # 此处 re-export 以保持 ``from app.core.config import AppSettings`` 的对外兼容。
 from app.core.settings import (
+    AgentPlatformSettings,
     AppSettings,
     ClaudeAgentSettings,
     CorsSettings,
@@ -96,6 +97,7 @@ class Settings(BaseSettings):
     cors: CorsSettings = CorsSettings()  # 跨域配置段（驱动 cors.py）
     llm: LlmSettings = LlmSettings()  # LLM 网关配置段（驱动 core/llm/）
     skills: SkillSettings = SkillSettings()  # skill 注册中心配置段（驱动 core/skills/）
+    agent_platform: AgentPlatformSettings = AgentPlatformSettings()  # Agent 平台能力配置段
     mcp: McpSettings = McpSettings()  # MCP Client 与独立 Server 配置段
     projects: ProjectSettings = ProjectSettings()  # 本地项目导入配置段
     claude_agent: ClaudeAgentSettings = ClaudeAgentSettings()  # Claude Agent SDK 配置段

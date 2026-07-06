@@ -13,6 +13,7 @@
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.mock_platform import router as mock_platform_router
 from app.api.v1.local_agent_router import router as local_agent_router
 from app.api.v1.llm_router import router as llm_router
 from app.api.v1.projects_router import router as projects_router
@@ -31,6 +32,7 @@ def register_routes(app: FastAPI) -> None:
     """
     # 基础设施路由（无版本前缀：探针/指标等固定路径）
     app.include_router(health_router)
+    app.include_router(mock_platform_router)
     app.include_router(local_agent_router, prefix="/v1")
     app.include_router(llm_router, prefix="/v1")
     app.include_router(projects_router, prefix="/v1")

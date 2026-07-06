@@ -31,6 +31,7 @@ async def list_projects(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.list_projects(user_id)
     return ApiResponse.ok(data).to_payload()
@@ -47,6 +48,7 @@ async def create_project(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.import_local_path(ProjectImportIn.model_validate(payload))
     return ApiResponse.ok(data).to_payload()
@@ -63,6 +65,7 @@ async def import_local_path(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.import_local_path(payload)
     return ApiResponse.ok(data).to_payload()
@@ -96,6 +99,7 @@ async def scan_project(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.scan_project(project_id, user_id)
     return ApiResponse.ok(data).to_payload()
@@ -113,6 +117,7 @@ async def create_project_local_agent_task(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.create_local_agent_task(project_id, payload)
     return ApiResponse.ok(data).to_payload()
@@ -130,6 +135,7 @@ async def create_session(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.create_session(project_id, payload)
     return ApiResponse.ok(data).to_payload()
@@ -147,6 +153,7 @@ async def list_sessions(
         db,
         settings.projects,
         use_local_agent_relay=settings.claude_agent.use_local_agent_relay,
+        agent_platform_settings=settings.agent_platform,
     )
     data = await service.list_sessions(project_id, user_id)
     return ApiResponse.ok({"items": data}).to_payload()

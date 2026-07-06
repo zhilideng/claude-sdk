@@ -53,6 +53,16 @@ skills:
   base_dir: app/skills  # skill 内容根目录（相对项目根）
   cache_loaded: true  # 是否缓存懒加载的 SkillBundle
 
+agent_platform:
+  enabled: true  # Agent MCP/Skill 能力统一来自平台；dev 默认读取本地 mock 数据
+  app_code: codex-web
+  scene: default
+  base_url: ""  # 为空时走本地 mock；接真实平台时配置为 https://platform.example.com
+  capabilities_path: /mock/internal-agent-assets
+  timeout: 5.0
+  max_skills: 20
+  max_skill_size_bytes: 1048576
+
 projects:
   allowed_roots:
     - /Users/zhili.deng/dzl-py
