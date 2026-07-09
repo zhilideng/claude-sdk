@@ -24,6 +24,72 @@
             }
           }
         ]
+      },
+      "github": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+        },
+        "tools": [
+          {
+            "name": "search_repositories",
+            "description": "Search for GitHub repositories"
+          },
+          {
+            "name": "get_file_contents",
+            "description": "Get the contents of a file or directory from a GitHub repository"
+          },
+          {
+            "name": "list_commits",
+            "description": "Get list of commits of a branch in a GitHub repository"
+          },
+          {
+            "name": "list_issues",
+            "description": "List issues in a GitHub repository with filtering options"
+          },
+          {
+            "name": "search_code",
+            "description": "Search for code across GitHub repositories"
+          },
+          {
+            "name": "search_issues",
+            "description": "Search for issues and pull requests across GitHub repositories"
+          },
+          {
+            "name": "search_users",
+            "description": "Search for users on GitHub"
+          },
+          {
+            "name": "get_issue",
+            "description": "Get details of a specific issue in a GitHub repository."
+          },
+          {
+            "name": "get_pull_request",
+            "description": "Get details of a specific pull request"
+          },
+          {
+            "name": "list_pull_requests",
+            "description": "List and filter repository pull requests"
+          },
+          {
+            "name": "get_pull_request_files",
+            "description": "Get the list of files changed in a pull request"
+          },
+          {
+            "name": "get_pull_request_status",
+            "description": "Get the combined status of all status checks for a pull request"
+          },
+          {
+            "name": "get_pull_request_comments",
+            "description": "Get the review comments on a pull request"
+          },
+          {
+            "name": "get_pull_request_reviews",
+            "description": "Get the reviews on a pull request"
+          }
+        ]
       }
     }
   },

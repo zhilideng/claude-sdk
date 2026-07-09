@@ -194,12 +194,11 @@ async def execute_claude_agent_task(
     diff_summary: list[dict[str, Any]] = []
     history = await message_repo.list_by_session(session_id)
     history_out = [_to_message_out(item) for item in history]
-    claude_code = ClaudeCodeService(settings.claude_agent, settings.agent_platform)
     snapshot = await get_or_create_session_asset_snapshot(
         session_id,
         settings.agent_platform,
     )
-
+    claude_code = ClaudeCodeService(settings.claude_agent, settings.agent_platform)
     try:
         async for sdk_event in claude_code.stream_session(
             cwd=cwd,

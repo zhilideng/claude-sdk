@@ -531,6 +531,9 @@ function inferAiErrorCode(error: unknown, searchableText: string): AiErrorCode {
     }
     return "API_KEY_INVALID";
   }
+  if (/mcp|schema|tool|工具/.test(searchableText)) {
+    return "TOOL_CALL_FAILED";
+  }
   if (/context|token limit|too long|上下文|输入内容过长/.test(searchableText)) {
     return "CONTEXT_TOO_LONG";
   }
@@ -539,9 +542,6 @@ function inferAiErrorCode(error: unknown, searchableText: string): AiErrorCode {
   }
   if (/busy|rate limit|429|排队|繁忙/.test(searchableText)) {
     return "MODEL_BUSY";
-  }
-  if (/tool|工具/.test(searchableText)) {
-    return "TOOL_CALL_FAILED";
   }
   if (
     error instanceof TypeError ||

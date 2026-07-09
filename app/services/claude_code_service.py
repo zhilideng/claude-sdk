@@ -4,7 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import shutil
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,10 @@ from app.schemas.project import SessionMessageOut
 from app.services.agent_platform_service import AgentPlatformCapabilities
 from app.services.agent_platform_service import load_agent_platform_capabilities
 from app.services.local_agent_service import get_local_agent_hub
+
+MCP_ENV_PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+CLAUDE_AUTH_ENV_NAMES = {"CLAUDE_CODE_OAUTH_TOKEN"}
+CLAUDE_AUTH_ENV_PREFIXES = ("ANTHROPIC_",)
 
 
 class ClaudeCodeStreamEvent(BaseModel):
@@ -63,8 +70,11 @@ class ClaudeCodeService:
         formatted_prompt = self._format_prompt(prompt, session_history)
 
         try:
-            from claude_agent_sdk import query
-            options = await self._build_options(project_root, platform_capabilities)
+            from claude_agent_sdk import ClaudeSDKClient
+            capabilities = platform_capabilities or await load_agent_platform_capabilities(
+                self._agent_platform_settings
+            )
+            options = await self._build_options(project_root, capabilities)
         except ImportError as exc:
             raise BizValidationError(
                 "推理服务依赖未安装，请先安装依赖后再重试"
@@ -103,26 +113,32 @@ class ClaudeCodeService:
                     data=self._result_message_to_data(message),
                 )
 
-        message_stream = aiter(query(prompt=formatted_prompt, options=options))
-        try:
-            first_message = await asyncio.wait_for(
-                anext(message_stream),
-                timeout=self._settings.startup_timeout,
+        async with ClaudeSDKClient(options) as client:
+            await self._wait_for_platform_mcp_servers(
+                client,
+                self._platform_mcp_server_names_from_options(options),
             )
-        except TimeoutError as exc:
-            raise BizValidationError(
-                f"推理连接超时（{self._settings.startup_timeout} 秒内未收到首个事件），"
-                "请确认本地模型登录状态后重试。"
-            ) from exc
-        except StopAsyncIteration:
-            return
+            await client.query(formatted_prompt)
+            message_stream = aiter(client.receive_response())
+            try:
+                first_message = await asyncio.wait_for(
+                    anext(message_stream),
+                    timeout=self._settings.startup_timeout,
+                )
+            except TimeoutError as exc:
+                raise BizValidationError(
+                    f"推理连接超时（{self._settings.startup_timeout} 秒内未收到首个事件），"
+                    "请确认本地模型登录状态后重试。"
+                ) from exc
+            except StopAsyncIteration:
+                return
 
-        async for event in emit_sdk_message(first_message):
-            yield event
-
-        async for message in message_stream:
-            async for event in emit_sdk_message(message):
+            async for event in emit_sdk_message(first_message):
                 yield event
+
+            async for message in message_stream:
+                async for event in emit_sdk_message(message):
+                    yield event
 
     async def run_session(
         self,
@@ -244,10 +260,24 @@ class ClaudeCodeService:
         capabilities = platform_capabilities or await load_agent_platform_capabilities(
             self._agent_platform_settings
         )
-        platform_mcp_servers = self._capability_mcp_servers(capabilities)
-        platform_allowed_tools = self._capability_allowed_tools(capabilities)
-        platform_prompt = self._render_capabilities_system_prompt(capabilities)
         sdk_env = self._build_sdk_env()
+        platform_mcp_servers, disabled_mcp_errors = self._resolve_platform_mcp_stdio_commands(
+            self._capability_mcp_servers(capabilities),
+            sdk_env,
+        )
+        enabled_mcp_names = set(platform_mcp_servers)
+        platform_allowed_tools = self._filter_allowed_tools_by_mcp_servers(
+            self._capability_allowed_tools(capabilities),
+            enabled_mcp_names,
+        )
+        prompt_capabilities = self._capabilities_for_runtime_prompt(
+            capabilities,
+            enabled_mcp_names,
+        )
+        platform_prompt = self._append_disabled_mcp_prompt(
+            self._render_capabilities_system_prompt(prompt_capabilities),
+            disabled_mcp_errors,
+        )
 
         if self._settings.use_local_agent_relay:
             mcp_servers = {
@@ -259,7 +289,7 @@ class ClaudeCodeService:
                 },
             }
             return ClaudeAgentOptions(
-                tools=[],
+                tools=None,
                 allowed_tools=[
                     "local_tool",
                     "mcp__local_agent__local_tool",
@@ -276,13 +306,13 @@ class ClaudeCodeService:
                 env=sdk_env,
                 mcp_servers=mcp_servers,
                 strict_mcp_config=True,
-                setting_sources=None,
+                setting_sources=self._sdk_setting_sources(),
                 skills=None,
                 extra_args={"disable-slash-commands": None},
             )
 
         return ClaudeAgentOptions(
-            tools=[],
+            tools=None,
             allowed_tools=platform_allowed_tools,
             system_prompt=platform_prompt,
             permission_mode=self._settings.permission_mode,
@@ -292,10 +322,79 @@ class ClaudeCodeService:
             env=sdk_env,
             mcp_servers=platform_mcp_servers,
             strict_mcp_config=True,
-            setting_sources=None,
+            setting_sources=self._sdk_setting_sources(),
             skills=None,
             extra_args={"disable-slash-commands": None},
         )
+
+    async def _wait_for_platform_mcp_servers(
+        self,
+        client: Any,
+        server_names: list[str],
+    ) -> None:
+        """等待平台 MCP 连接完成，确保工具 schema 进入模型上下文。"""
+        if not server_names:
+            return
+
+        deadline = asyncio.get_running_loop().time() + self._settings.startup_timeout
+        last_status: dict[str, Any] = {}
+        while True:
+            status_payload = await client.get_mcp_status()
+            servers = status_payload.get("mcpServers", [])
+            status_by_name = {
+                str(server.get("name")): server
+                for server in servers
+                if isinstance(server, dict)
+            }
+            allowed_server_names = {*server_names, "local_agent"}
+            unknown_server_names = sorted(
+                name
+                for name in status_by_name
+                if name and name not in allowed_server_names
+            )
+            if unknown_server_names:
+                raise BizValidationError(
+                    "检测到非平台 MCP Server，已拒绝加载: "
+                    f"{json.dumps(unknown_server_names, ensure_ascii=False)}"
+                )
+            last_status = status_by_name
+            not_ready: list[str] = []
+            failed: list[str] = []
+            for name in server_names:
+                server = status_by_name.get(name)
+                status = str(server.get("status") if server else "missing")
+                tools = server.get("tools") if server else None
+                if status == "connected" and isinstance(tools, list) and tools:
+                    continue
+                if status in {"failed", "needs-auth", "disabled"}:
+                    failed.append(name)
+                else:
+                    not_ready.append(name)
+
+            if not not_ready and not failed:
+                return
+
+            if failed:
+                details = {
+                    name: status_by_name.get(name, {})
+                    for name in failed
+                }
+                raise BizValidationError(
+                    "平台 MCP 连接失败，工具 schema 未加载: "
+                    f"{json.dumps(details, ensure_ascii=False)}"
+                )
+
+            if asyncio.get_running_loop().time() >= deadline:
+                details = {
+                    name: last_status.get(name, {"status": "missing"})
+                    for name in not_ready
+                }
+                raise BizValidationError(
+                    "平台 MCP 连接超时，工具 schema 未加载: "
+                    f"{json.dumps(details, ensure_ascii=False)}"
+                )
+
+            await asyncio.sleep(0.5)
 
     @staticmethod
     def _capability_mcp_servers(capabilities: Any) -> dict[str, Any]:
@@ -308,6 +407,43 @@ class ClaudeCodeService:
         """读取平台 allowed_tools，兼容测试替身对象。"""
         value = getattr(capabilities, "allowed_tools", [])
         return [str(item) for item in value] if isinstance(value, list) else []
+
+    @staticmethod
+    def _filter_allowed_tools_by_mcp_servers(
+        allowed_tools: list[str],
+        enabled_mcp_names: set[str],
+    ) -> list[str]:
+        """过滤已禁用 MCP 的工具白名单，避免模型看到不可调用函数。"""
+        filtered: list[str] = []
+        for tool_name in allowed_tools:
+            if not tool_name.startswith("mcp__"):
+                filtered.append(tool_name)
+                continue
+            parts = tool_name.split("__", 2)
+            if len(parts) < 3 or parts[1] in enabled_mcp_names:
+                filtered.append(tool_name)
+        return filtered
+
+    @staticmethod
+    def _capabilities_for_runtime_prompt(
+        capabilities: Any,
+        enabled_mcp_names: set[str],
+    ) -> Any:
+        """生成本轮运行时提示词使用的能力视图。"""
+        loaded_servers = getattr(capabilities, "loaded_mcp_servers", None)
+        if not isinstance(loaded_servers, list):
+            return capabilities
+
+        filtered_servers = [
+            server
+            for server in loaded_servers
+            if str(getattr(server, "name", "") or "") in enabled_mcp_names
+        ]
+        if isinstance(capabilities, AgentPlatformCapabilities):
+            return capabilities.model_copy(
+                update={"loaded_mcp_servers": filtered_servers}
+            )
+        return capabilities
 
     @staticmethod
     def _render_capabilities_system_prompt(capabilities: Any) -> str:
@@ -339,16 +475,301 @@ class ClaudeCodeService:
         return "\n\n".join(part for part in parts if part.strip())
 
     @staticmethod
+    def _append_disabled_mcp_prompt(
+        platform_prompt: str,
+        disabled_mcp_errors: dict[str, str],
+    ) -> str:
+        """追加本轮未启用 MCP 的原因，便于普通提问得到可解释回答。"""
+        if not disabled_mcp_errors:
+            return platform_prompt
+
+        lines = ["平台 MCP 已配置但当前未启用，不能调用这些 MCP 工具："]
+        for name, reason in sorted(disabled_mcp_errors.items()):
+            lines.append(f"- {name}: {reason}")
+        return ClaudeCodeService._join_system_prompts(
+            platform_prompt,
+            "\n".join(lines),
+        )
+
+    @staticmethod
     def _join_system_prompts(*parts: str) -> str:
         """拼接多个系统提示片段。"""
         return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
     @staticmethod
     def _build_sdk_env() -> dict[str, str]:
-        """构造 SDK 子进程环境变量，保留认证并移除桌面入口噪音。"""
+        """构造 SDK 子进程环境变量，隔离用户/项目 Claude 配置来源。"""
         env = dict(os.environ)
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        source_config_dir = ClaudeCodeService._source_claude_config_dir(env)
+        ClaudeCodeService._inherit_claude_auth_env(env, source_config_dir)
+        env["PATH"] = ClaudeCodeService._build_sdk_path(env)
+        isolated_dirs = ClaudeCodeService._ensure_isolated_claude_runtime_dirs()
+        ClaudeCodeService._copy_claude_auth_files(
+            source_config_dir,
+            isolated_dirs["claude_config"],
+        )
+        env["CLAUDE_CONFIG_DIR"] = str(isolated_dirs["claude_config"])
+        env["HOME"] = str(isolated_dirs["home"])
+        env["XDG_CONFIG_HOME"] = str(isolated_dirs["xdg_config"])
         return env
+
+    @staticmethod
+    def _sdk_setting_sources() -> list[str]:
+        """限制 Claude CLI 只读取隔离后的 user 配置源。"""
+        return ["user"]
+
+    @staticmethod
+    def _ensure_isolated_claude_runtime_dirs() -> dict[str, Path]:
+        """创建服务私有 Claude 运行目录，避免读取真实用户或项目配置。"""
+        base_dir = ClaudeCodeService._isolated_claude_runtime_base()
+        dirs = {
+            "home": base_dir / "home",
+            "xdg_config": base_dir / "xdg-config",
+            "claude_config": base_dir / "claude-config",
+        }
+        for path in dirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+        return dirs
+
+    @staticmethod
+    def _source_claude_config_dir(env: dict[str, str]) -> Path:
+        """解析真实 Claude 配置目录，仅用于迁移认证，不读取 MCP 配置。"""
+        raw_config_dir = str(env.get("CLAUDE_CONFIG_DIR") or "").strip()
+        if raw_config_dir:
+            path = Path(raw_config_dir).expanduser()
+            return path if path.is_absolute() else Path.cwd().joinpath(path).resolve()
+        home = Path(str(env.get("HOME") or str(Path.home()))).expanduser()
+        return home / ".claude"
+
+    @staticmethod
+    def _inherit_claude_auth_env(env: dict[str, str], source_config_dir: Path) -> None:
+        """只从用户 settings.json 的 env 白名单继承认证变量，不继承 MCP 配置。"""
+        settings_path = source_config_dir / "settings.json"
+        try:
+            payload = json.loads(settings_path.read_text("utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+            return
+        raw_env = payload.get("env") if isinstance(payload, dict) else None
+        if not isinstance(raw_env, dict):
+            return
+        for key, value in raw_env.items():
+            name = str(key)
+            if not ClaudeCodeService._is_claude_auth_env_name(name):
+                continue
+            if str(env.get(name) or "").strip():
+                continue
+            text_value = str(value).strip()
+            if text_value:
+                env[name] = text_value
+
+    @staticmethod
+    def _is_claude_auth_env_name(name: str) -> bool:
+        """判断是否允许从用户 Claude settings env 继承。"""
+        return name in CLAUDE_AUTH_ENV_NAMES or any(
+            name.startswith(prefix)
+            for prefix in CLAUDE_AUTH_ENV_PREFIXES
+        )
+
+    @staticmethod
+    def _copy_claude_auth_files(source_config_dir: Path, target_config_dir: Path) -> None:
+        """复制 OAuth 认证文件，不复制 settings/mcp 配置。"""
+        source_credentials = source_config_dir / ".credentials.json"
+        target_credentials = target_config_dir / ".credentials.json"
+        with suppress(FileNotFoundError, OSError):
+            shutil.copyfile(source_credentials, target_credentials)
+            target_credentials.chmod(0o600)
+
+    @staticmethod
+    def _isolated_claude_runtime_base() -> Path:
+        """解析隔离运行目录，默认落在项目 .runtime 下。"""
+        raw = os.getenv("CLAUDE_SDK_AGENT_RUNTIME_DIR", "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            return path if path.is_absolute() else Path.cwd().joinpath(path).resolve()
+        return Path.cwd().joinpath(".runtime", "claude-agent-sdk").resolve()
+
+    @staticmethod
+    def _build_sdk_path(env: dict[str, str]) -> str:
+        """补齐 SDK 子进程 PATH，避免非交互服务进程找不到 nvm/npm 工具。"""
+        path_entries = [
+            item
+            for item in str(env.get("PATH") or "").split(os.pathsep)
+            if item
+        ]
+        for candidate in ClaudeCodeService._sdk_path_candidates(env):
+            if candidate and candidate not in path_entries:
+                path_entries.append(candidate)
+        return os.pathsep.join(path_entries)
+
+    @staticmethod
+    def _sdk_path_candidates(env: dict[str, str]) -> list[str]:
+        """发现常见 Node/npm 安装目录，供平台 stdio MCP（如 npx）启动使用。"""
+        candidates: list[str] = []
+        for key in ("NVM_BIN", "PNPM_HOME"):
+            value = str(env.get(key) or "").strip()
+            if value:
+                candidates.append(value)
+
+        volta_home = str(env.get("VOLTA_HOME") or "").strip()
+        if volta_home:
+            candidates.append(str(Path(volta_home).expanduser() / "bin"))
+
+        home = Path(str(env.get("HOME") or "")).expanduser()
+        if str(home):
+            candidates.extend(
+                [
+                    str(home / ".volta" / "bin"),
+                    str(home / ".local" / "bin"),
+                ]
+            )
+            nvm_versions_dir = home / ".nvm" / "versions" / "node"
+            if nvm_versions_dir.exists():
+                candidates.extend(
+                    str(path)
+                    for path in sorted(
+                        nvm_versions_dir.glob("v*/bin"),
+                        key=ClaudeCodeService._node_bin_sort_key,
+                        reverse=True,
+                    )
+                )
+
+        candidates.extend(
+            [
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+        )
+        return [
+            candidate
+            for candidate in candidates
+            if Path(candidate).expanduser().is_dir()
+        ]
+
+    @staticmethod
+    def _node_bin_sort_key(path: Path) -> tuple[int, int, int, str]:
+        """按 Node 版本排序 nvm bin 目录，优先选择较新的版本。"""
+        version = path.parent.name.lstrip("v")
+        parts = version.split(".")
+        numbers: list[int] = []
+        for part in parts[:3]:
+            try:
+                numbers.append(int(part))
+            except ValueError:
+                numbers.append(0)
+        while len(numbers) < 3:
+            numbers.append(0)
+        return numbers[0], numbers[1], numbers[2], str(path)
+
+    @staticmethod
+    def _resolve_platform_mcp_stdio_commands(
+        mcp_servers: dict[str, Any],
+        env: dict[str, str],
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """解析平台 MCP 运行配置，补齐命令路径与敏感环境变量。"""
+        resolved_servers: dict[str, Any] = {}
+        disabled_errors: dict[str, str] = {}
+        for name, config in mcp_servers.items():
+            if not isinstance(config, dict):
+                resolved_servers[name] = config
+                continue
+
+            resolved_config = dict(config)
+            try:
+                resolved_config = ClaudeCodeService._resolve_platform_mcp_env(
+                    name,
+                    resolved_config,
+                    env,
+                )
+            except BizValidationError as exc:
+                disabled_errors[str(name)] = exc.message
+                continue
+            command = resolved_config.get("command")
+            if (
+                str(resolved_config.get("type") or "") == "stdio"
+                and isinstance(command, str)
+                and ClaudeCodeService._is_plain_executable_name(command)
+            ):
+                executable = shutil.which(command.strip(), path=str(env.get("PATH") or ""))
+                if executable:
+                    resolved_config["command"] = executable
+            resolved_servers[name] = resolved_config
+        return resolved_servers, disabled_errors
+
+    @staticmethod
+    def _platform_mcp_server_names_from_options(options: Any) -> list[str]:
+        """从 SDK options 中读取本轮实际启用的平台 MCP 名称。"""
+        mcp_servers = getattr(options, "mcp_servers", {}) or {}
+        if not isinstance(mcp_servers, dict):
+            return []
+        return [
+            str(name)
+            for name in mcp_servers
+            if str(name) != "local_agent"
+        ]
+
+    @staticmethod
+    def _resolve_platform_mcp_env(
+        server_name: str,
+        config: dict[str, Any],
+        service_env: dict[str, str],
+    ) -> dict[str, Any]:
+        """将平台 MCP env 占位符解析为服务进程环境变量。"""
+        raw_env = config.get("env")
+        if raw_env is None:
+            return config
+        if not isinstance(raw_env, dict):
+            raise BizValidationError(f"平台 MCP env 配置必须是对象: {server_name}")
+
+        resolved_env: dict[str, str] = {}
+        for key, value in raw_env.items():
+            target_key = str(key)
+            if not target_key.strip():
+                continue
+            resolved_env[target_key] = ClaudeCodeService._resolve_platform_mcp_env_value(
+                server_name,
+                target_key,
+                value,
+                service_env,
+            )
+
+        resolved_config = dict(config)
+        resolved_config["env"] = resolved_env
+        return resolved_config
+
+    @staticmethod
+    def _resolve_platform_mcp_env_value(
+        server_name: str,
+        target_key: str,
+        value: Any,
+        service_env: dict[str, str],
+    ) -> str:
+        """解析单个平台 MCP env 值；${NAME} 表示从服务环境读取。"""
+        raw_value = str(value)
+        match = MCP_ENV_PLACEHOLDER_RE.match(raw_value.strip())
+        if not match:
+            return raw_value
+
+        source_key = match.group(1)
+        resolved = str(service_env.get(source_key) or "").strip()
+        if not resolved:
+            raise BizValidationError(
+                "平台 MCP 环境变量未配置: "
+                f"{server_name}.{target_key} <- {source_key}"
+            )
+        return resolved
+
+    @staticmethod
+    def _is_plain_executable_name(command: str) -> bool:
+        """判断 command 是否是不带路径/参数的可执行文件名。"""
+        value = command.strip()
+        if not value or any(char.isspace() for char in value):
+            return False
+        return Path(value).name == value
 
     def _resolve_sdk_cwd(self) -> str:
         """返回远端 SDK 进程可用的工作目录。
@@ -492,6 +913,7 @@ class ClaudeCodeService:
             "local_tool 会自动在当前项目 root_path 下由用户本机连接器执行，不要让用户再提供 root_path。"
             "可用 action 包括 ping_path、list_tree、shell、read_file、write_file、apply_patch。"
             "写文件使用 action=write_file 且 payload 包含 path/content；执行命令优先使用 shell 的 payload.args 列表。"
+            "公司平台 MCP 工具（例如 github）必须直接调用对应的 MCP 工具，不要通过 local_tool 转发。"
             "不要尝试使用服务器本机路径或内置 Bash/Read/Edit 工具。"
         )
 

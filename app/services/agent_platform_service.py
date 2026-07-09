@@ -205,8 +205,9 @@ async def _build_capabilities(
     settings: AgentPlatformSettings,
 ) -> AgentPlatformCapabilities:
     """归一化平台能力结构。"""
-    mcp_servers = _normalize_mcp_servers(data)
-    loaded_mcp_servers = _describe_mcp_servers(mcp_servers)
+    raw_mcp_servers = _extract_mcp_servers(data)
+    mcp_servers = _normalize_mcp_servers(raw_mcp_servers)
+    loaded_mcp_servers = _describe_mcp_servers(raw_mcp_servers)
     allowed_tools = _normalize_allowed_tools(data, loaded_mcp_servers)
     skills = await _load_skills(data, settings)
     return AgentPlatformCapabilities(
@@ -223,12 +224,12 @@ async def _build_capabilities(
     )
 
 
-def _normalize_mcp_servers(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """兼容平台直出与 specs/0706.md 的 MCP 配置格式。"""
+def _extract_mcp_servers(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """提取平台原始 MCP 配置，保留工具元数据供调试展示使用。"""
     direct = data.get("mcp_servers")
     if isinstance(direct, dict):
         return {
-            str(name): _normalize_single_mcp_config(config)
+            str(name): dict(config)
             for name, config in direct.items()
             if isinstance(config, dict)
         }
@@ -238,9 +239,19 @@ def _normalize_mcp_servers(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if not isinstance(mcp_servers, dict):
         return {}
     return {
-        str(name): _normalize_single_mcp_config(config)
+        str(name): dict(config)
         for name, config in mcp_servers.items()
         if isinstance(config, dict)
+    }
+
+
+def _normalize_mcp_servers(
+    raw_mcp_servers: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """生成 Claude SDK 可接收的 MCP 运行配置。"""
+    return {
+        name: _normalize_single_mcp_config(config)
+        for name, config in raw_mcp_servers.items()
     }
 
 
@@ -250,6 +261,36 @@ def _normalize_single_mcp_config(config: dict[str, Any]) -> dict[str, Any]:
     transport = normalized.pop("transport", None)
     if transport and "type" not in normalized:
         normalized["type"] = transport
+    if normalized.get("type") == "streamable_http":
+        normalized["type"] = "http"
+    if "command" in normalized and "type" not in normalized:
+        normalized["type"] = "stdio"
+    return _strip_mcp_runtime_metadata(normalized)
+
+
+def _strip_mcp_runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    """移除平台展示字段，避免 Claude SDK 收到非运行配置。"""
+    kind = str(config.get("type") or "")
+    allowed_keys_by_type = {
+        "stdio": {"type", "command", "args", "env"},
+        "http": {"type", "url", "headers"},
+        "sse": {"type", "url", "headers"},
+        "sdk": {"type", "name", "instance"},
+    }
+    allowed_keys = allowed_keys_by_type.get(kind)
+    if allowed_keys is None:
+        return {key: value for key, value in config.items() if key != "tools"}
+    return {key: value for key, value in config.items() if key in allowed_keys}
+
+
+def _normalize_mcp_transport_for_display(config: dict[str, Any]) -> dict[str, Any]:
+    """归一化展示配置中的 transport/type，保持调试接口与运行配置一致。"""
+    normalized = dict(config)
+    transport = normalized.pop("transport", None)
+    if transport and "type" not in normalized:
+        normalized["type"] = transport
+    if normalized.get("type") == "streamable_http":
+        normalized["type"] = "http"
     if "command" in normalized and "type" not in normalized:
         normalized["type"] = "stdio"
     return normalized
@@ -261,7 +302,8 @@ def _describe_mcp_servers(
     """生成调试接口可展示的 MCP Server/Tool 摘要。"""
     servers: list[AgentMcpServer] = []
     for name, config in mcp_servers.items():
-        tools = _normalize_mcp_tools(name, config)
+        normalized = _normalize_mcp_transport_for_display(config)
+        tools = _normalize_mcp_tools(name, normalized)
         servers.append(AgentMcpServer(name=name, status="connected", tools=tools))
     return servers
 

@@ -93,6 +93,19 @@ download_url="${SERVER_URL%/}/v1/local-agent/binary?platform=$platform"
 echo "Downloading claude-sdk local agent for $platform..."
 download_file "$download_url" "$binary_path"
 chmod +x "$binary_path" 2>/dev/null || true
+case "$platform" in
+  macos-*)
+    if command -v codesign >/dev/null 2>&1; then
+      codesign --force --sign - "$binary_path" >/dev/null 2>&1 || {
+        echo "Failed to codesign claude-sdk local agent at $binary_path" >&2
+        exit 1
+      }
+    else
+      echo "codesign is required to run claude-sdk local agent on macOS" >&2
+      exit 1
+    fi
+    ;;
+esac
 echo "Starting claude-sdk local agent..."
 exec "$binary_path" --server "$SERVER_URL" --agent-name "$AGENT_NAME"
 '''
